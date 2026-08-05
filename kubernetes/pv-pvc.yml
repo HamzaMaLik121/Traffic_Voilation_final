@@ -1,10 +1,9 @@
-# ── Namespace ──────────────────────────────────────────────
 apiVersion: v1
 kind: Namespace
 metadata:
   name: traffic
 ---
-# ── Database PV + PVC ──────────────────────────────────────
+# Database PV + PVC (shared by worker and api)
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -32,14 +31,13 @@ spec:
     requests:
       storage: 1Gi
 ---
-# ── Evidence PV + PVC ──────────────────────────────────────
+# Evidence PV + PVC (shared by worker and dashboard)
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: evidence-pv
   namespace: traffic
 spec:
-  storageClassName: ""
   storageClassName: ""
   capacity:
     storage: 2Gi
@@ -61,7 +59,7 @@ spec:
     requests:
       storage: 2Gi
 ---
-# ── Models PV + PVC ────────────────────────────────────────
+# Models PV + PVC (worker only — mounted at /app/models)
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -88,11 +86,3 @@ spec:
   resources:
     requests:
       storage: 5Gi
-
-# do this first      
-# mkdir -p /home/ubuntu/tvs-data/database
-# mkdir -p /home/ubuntu/tvs-data/outputs
-# mkdir -p /home/ubuntu/tvs-data/models
-
-# Copy your models in
-# cp ~/traffic_Devops/models/* /home/ubuntu/tvs-data/models/

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tvs-api
+  namespace: traffic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tvs-api
+  template:
+    metadata:
+      labels:
+        app: tvs-api
+    spec:
+      containers:
+      - name: api
+        image: hamzamalik1/traffic-api:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: API_HOST
+          value: "0.0.0.0"
+        - name: API_PORT
+          value: "5000"
+        - name: DATABASE_DIR
+          value: "/app/database"
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+        volumeMounts:
+        - name: db-data
+          mountPath: /app/database
+      volumes:
+      - name: db-data
+        persistentVolumeClaim:
+          claimName: db-pvc

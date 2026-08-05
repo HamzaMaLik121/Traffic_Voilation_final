@@ -13,12 +13,14 @@ spec:
       labels:
         app: tvs-dashboard
     spec:
-      nodeName: tvs-cluster-worker2  # force dashboard to same node remove it later
       containers:
       - name: dashboard
         image: hamzamalik1/traffic-dashboard:latest
         ports:
         - containerPort: 8501
+        env:
+        - name: API_URL
+          value: "http://tvs-api-svc:80"
         resources:
           limits:
             memory: "512Mi"
@@ -27,14 +29,9 @@ spec:
             memory: "128Mi"
             cpu: "100m"
         volumeMounts:
-        - name: db-data
-          mountPath: /app/database
         - name: evidence-data
           mountPath: /app/outputs
       volumes:
-      - name: db-data
-        persistentVolumeClaim:
-          claimName: db-pvc
       - name: evidence-data
         persistentVolumeClaim:
           claimName: evidence-pvc

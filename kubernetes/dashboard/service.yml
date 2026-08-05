@@ -9,4 +9,4 @@ spec:
   ports:
   - port: 8501
     targetPort: 8501
-  type: LoadBalancer      # exposes externally — gives you public IP
+  type: LoadBalancer

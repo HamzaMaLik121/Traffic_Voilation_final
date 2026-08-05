@@ -1,68 +1,101 @@
 # ═════════════════════════════════════════════════════════════════════
-#  Traffic Violation Detection System — Docker Compose
+#  Traffic Violation Detection System — Docker Compose (3-service)
+# ═════════════════════════════════════════════════════════════════════
 #
-#  Architecture: 2-tier application with shared SQLite database
-#    • backend   — CV/ML detection pipeline  (984 MB, PyTorch + OpenCV + YOLO)
-#                  Continuously processes video in a loop
-#    • dashboard — Streamlit web UI          (269 MB, lightweight Pandas + Plotly)
-#                  Live updates every 3-5 seconds
+#  ┌────────────────────────────────────────────────────────────────────────────────┐
+#  │                              NETWORK ARCHITECTURE                              │
+#  │                                                                                │
+#  │   ┌──────────────┐    shared volume     ┌──────────────┐    shared volume     │
+#  │   │   WORKER     │  ──────────────────►  │     API      │  ──────────────────► │
+#  │   │  port: none  │      db_data          │   port:5000  │    evidence_data     │
+#  │   │  (internal)  │                      │  (internal)  │                       │
+#  │   │              │                      │      │       │                      │
+#  │   │  YOLOv8 +    │    ┌──────────────┐   │  host port   │                      │
+#  │   │  EasyOCR     │    │  SHARED DB   │   │  5001:5000  │                      │
+#  │   │  process     │    │  (SQLite)    │   │      │       │                      │
+#  │   │  video loop  │    └──────────────┘   │  REST API   │                      │
+#  │   └──────────────┘                      └──────┬───────┘                      │
+#  │                                                │                               │
+#  │                                          HTTP /api/*                           │
+#  │                                                │                               │
+#  │                                         ┌──────────────┐                      │
+#  │                                         │  DASHBOARD   │                      │
+#  │                                         │   port:8501  │  host port 8502      │
+#  │                                         │  (internal)  │ ─────────────────►   │
+#  │                                         │              │  Browser access      │
+#  │                                         │  Streamlit   │                      │
+#  │                                         │  Web UI      │                      │
+#  │                                         └──────────────┘                      │
+#  └────────────────────────────────────────────────────────────────────────────────┘
 #
-#  Quick start (runs both simultaneously):
-#    docker compose up
+#  Data flow:
+#    1. Worker reads video files from mounted ./data/ folder
+#    2. Worker runs YOLOv8 detection + EasyOCR on each frame
+#    3. Worker writes violations to shared SQLite database (db_data volume)
+#    4. Worker saves evidence JPGs + latest_frame.jpg to shared outputs (evidence_data volume)
+#    5. API reads from the shared DB and outputs volume, exposes REST endpoints
+#    6. Dashboard fetches violation data from API via HTTP and displays evidence images
 #
-#  Access points:
-#    • Dashboard: http://localhost:8501  (violation records + charts)
-#    • Backend logs: docker compose logs -f backend
+#  Service dependency chain:
+#    worker ──(writes to)──► db_data ◄──(reads from)── api ◄──(HTTP calls)── dashboard
+#    worker ──(writes to)──► evidence_data ◄──(reads from)── dashboard (evidence images)
+#    worker ──(writes to)──► evidence_data ◄──(reads from)── api (MJPEG live feed)
 #
-#  Stop everything:
-#    docker compose down
+#  Networking:
+#    • All 3 services are on the default Docker Compose network (bridge)
+#    • Services resolve each other by container_name: traffic-worker, traffic-api, traffic-dashboard
+#    • Only api (port 5000 mapped to 5001) and dashboard (port 8501 mapped to 8502) are
+#      exposed to the host — worker is internal-only
+#    • The dashboard calls the API at http://api:5000 (Docker DNS resolution)
+#    • The browser accesses the dashboard at http://localhost:8502
 # ═════════════════════════════════════════════════════════════════════
 
 services:
 
-  # ── Backend: Video Detection Pipeline ───────────────────────────────
-  backend:
-    image: traffic-backend:latest 
+  # ── Worker: Video Detection Pipeline ───────────────────────────────
+  worker:
+    image: traffic-worker:latest
     build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: traffic-backend
-    restart: on-failure  # FIX: was 'unless-stopped' — that hid real exit codes
-                         # on-failure lets Docker capture + report crash reasons
+      context: ./worker
+      dockerfile: Dockerfile
+    pull_policy: build
+    container_name: traffic-worker
+    restart: on-failure
 
     volumes:
-      # Persistent data shared with the dashboard
+      # Shared volumes with api and dashboard
       - db_data:/app/database
       - evidence_data:/app/outputs
 
-      # Mount local model weights (large files, not baked into image)
-      - ./models:/app/models:ro
+      # Lane configuration (read-only; also baked into the image)
+      - ./worker/config/lane_config.json:/app/config/lane_config.json:ro
 
-      # Mount video input folder
-      - ./data:/app/data:ro
+      # Persist EasyOCR model cache across restarts (avoids re-download)
+      - easyocr_cache:/root/.EasyOCR
 
-      # Lane configuration (read-only; edit locally then rebuild)
-      - ./config/lane_config.json:/app/config/lane_config.json:ro
+      # LOCAL ONLY — AWS credentials so entrypoint.sh can pull models +
+      # videos from S3 on startup. Models (ml/) and data/ are no longer
+      # stored locally — they live in S3 (see MODEL_BUCKET below).
+      # On EKS/Kubernetes replace this mount with an IAM role (IRSA).
+      - ${HOME}/.aws:/root/.aws:ro
 
     environment:
       - PYTHONUNBUFFERED=1
-      - LOOP_VIDEO=1           # Set to 1 to loop video continuously
-      - HEADLESS=1             # Disable cv2.imshow() for headless Docker
+      - LOOP_VIDEO=1
+      - HEADLESS=1
+      - MODEL_DIR=/app/models
+      # S3 bucket containing models/ and data/ — entrypoint.sh syncs
+      # them into /app/models and /app/data/videos on container start.
+      - MODEL_BUCKET=traffic-violation-project-data-models
+      - AWS_DEFAULT_REGION=us-east-1
 
-    # FIX: removed the shell while-loop — let Docker handle restarts via
-    # 'restart: on-failure'. This way Docker captures the real exit code
-    # and you can see actual crash reasons in 'docker compose logs backend'
-    command: ["python", "live_test.py"]
-
-    # FIX: added healthcheck — checks DB file exists (written on first detection)
     healthcheck:
       test: ["CMD", "test", "-f", "/app/database/violations.db"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 30s  # give YOLO + EasyOCR time to load before first check
+      start_period: 60s
 
-    # FIX: resource limits — without these, PyTorch can OOM-kill the host
     deploy:
       resources:
         limits:
@@ -72,31 +105,76 @@ services:
           memory: 512m
           cpus: '0.5'
 
+    # No port mapping — worker is internal only
 
-  # ── Frontend: Streamlit Dashboard ────────────────────────────────────
-  dashboard:
-    image: traffic-dashboard:latest
+
+  # ── API: Flask REST API ────────────────────────────────────────────
+  api:
+    image: traffic-api:latest
     build:
-      context: .
-      dockerfile: Dockerfile.dashboard
-    container_name: traffic-dashboard
+      context: ./api
+      dockerfile: Dockerfile
+    pull_policy: build
+    container_name: traffic-api
     restart: unless-stopped
 
-    # FIX: wait for backend to start before dashboard comes up
-    # prevents dashboard from showing empty DB on cold start
-    depends_on:
-      backend:
-        condition: service_healthy
-
-    ports:
-      - "8502:8501"          # Open http://localhost:8501 in your browser
-
+    # No dependency on worker — API can serve independently
     volumes:
-      # Read from the same database and evidence images the backend writes
+      # Read the same database the worker writes
       - db_data:/app/database
+      # Read latest annotated frame for live feed
       - evidence_data:/app/outputs
 
     environment:
+      - PYTHONUNBUFFERED=1
+      - API_HOST=0.0.0.0
+      - API_PORT=5000
+      - DATABASE_DIR=/app/database
+      - OUTPUT_DIR=/app/outputs
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    ports:
+      - "5001:5000"
+
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+          cpus: '0.1'
+
+
+  # ── Dashboard: Streamlit Web UI ────────────────────────────────────
+  dashboard:
+    image: traffic-dashboard:latest
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    pull_policy: build
+    container_name: traffic-dashboard
+    restart: unless-stopped
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    ports:
+      - "8502:8501"
+
+    volumes:
+      # Read evidence images from shared volume
+      - evidence_data:/app/outputs
+
+    environment:
+      - API_URL=http://api:5000
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
       - STREAMLIT_SERVER_HEADLESS=true
@@ -109,7 +187,6 @@ services:
       retries: 3
       start_period: 15s
 
-    # FIX: resource limits — dashboard is lightweight, cap it low
     deploy:
       resources:
         limits:
@@ -126,35 +203,5 @@ volumes:
     driver: local
   evidence_data:
     driver: local
-
-# ═════════════════════════════════════════════════════════════════════
-#  Usage Examples
-# ═════════════════════════════════════════════════════════════════════
-#
-# Start both services (backend processing + live dashboard):
-#   docker compose up
-#
-# Start in detached mode (background):
-#   docker compose up -d
-#   Then open http://localhost:8501 to see live violations
-#
-# View real-time backend logs (violation detections):
-#   docker compose logs -f backend
-#
-# View dashboard logs:
-#   docker compose logs -f dashboard
-#
-# Stop all services:
-#   docker compose down
-#
-# Stop and remove all data (deletes database and evidence):
-#   docker compose down -v
-#
-# Rebuild after code changes:
-#   docker compose build
-#   docker compose up
-#
-# Run backend once with a specific video (no loop):
-#   docker compose run --rm backend python live_test.py /app/data/videos/my_video.mp4
-#
-# ═════════════════════════════════════════════════════════════════════
+  easyocr_cache:
+    driver: local

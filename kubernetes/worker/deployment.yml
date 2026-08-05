@@ -1,22 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: tvs-backend
+  name: tvs-worker
   namespace: traffic
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: tvs-backend
+      app: tvs-worker
   template:
     metadata:
       labels:
-        app: tvs-backend
+        app: tvs-worker
     spec:
-      nodeName: tvs-cluster-worker2  # force backend to worker2 remove it later 
       containers:
-      - name: backend
-        image: hamzamalik1/traffic-backend:latest
+      - name: worker
+        image: hamzamalik1/traffic-worker:latest
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
@@ -24,6 +23,8 @@ spec:
           value: "1"
         - name: LOOP_VIDEO
           value: "1"
+        - name: MODEL_DIR
+          value: "/app/models"
         resources:
           limits:
             memory: "3Gi"
@@ -38,8 +39,9 @@ spec:
           mountPath: /app/outputs
         - name: models
           mountPath: /app/models
-        - name: data             # FIX: was missing
-          mountPath: /app/data  
+        - name: lane-config
+          mountPath: /app/config/lane_config.json
+          subPath: lane_config.json
       volumes:
       - name: db-data
         persistentVolumeClaim:
@@ -48,11 +50,8 @@ spec:
         persistentVolumeClaim:
           claimName: evidence-pvc
       - name: models
-        hostPath:
-          path: /mnt/models
-      - name: data               # FIX: was missing
-        hostPath:
-          path: /mnt/data      # fix path
-
-
-          
+        persistentVolumeClaim:
+          claimName: models-pvc
+      - name: lane-config
+        configMap:
+          name: lane-config

@@ -1,0 +1,62 @@
+# ═════════════════════════════════════════════════════════════════════
+#  .gitignore — Traffic Violation Detection System
+#  Excludes generated files, runtime data, and large datasets
+# ═════════════════════════════════════════════════════════════════════
+
+# ── Runtime generated data ────────────────────────────────────────────
+database/
+violations.db
+outputs/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+venv/
+.venv/
+
+# ── Training datasets (large files, don't belong in Git) ──────────────
+# The entire data/ tree (raw datasets, processed datasets, videos) is
+# managed outside Git — pushed to S3 separately and mounted at runtime.
+data/
+
+# ── Trained model weights (separately managed via S3) ─────────────────
+# All PyTorch / ONNX weights are excluded from Git. They are:
+#   • Downloaded from S3 at deploy time (MODEL_BUCKET)
+#   • Mounted into the worker container via ./ml volume (docker-compose)
+*.pt
+*.pth
+ml/*/weights/*.onnx
+
+# ── Environment / secrets (never commit) ──────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Test artifacts (generated, not source) ────────────────────────────
+tests/TEST_REPORT.csv
+tests/test_results.json
+
+# ── ML training artifacts (regeneratable YOLO plots — keep repo light) ──
+ml/*/Box*.png
+ml/*/confusion_matrix*.png
+ml/*/labels.jpg
+ml/*/results.png
+ml/*/train_batch*.jpg
+ml/*/val_batch*.jpg
+
+# ── Python / IDE ──────────────────────────────────────────────────────
+*.pyc
+__pycache__/
+env/
+.venv/
+*.egg-info/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Docker ────────────────────────────────────────────────────────────
+.dockerignore
+
+# ── Security reports ──────────────────────────────────────────────────
+security/
