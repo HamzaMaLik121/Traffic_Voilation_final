@@ -290,13 +290,23 @@ docker compose exec worker python tools/calibrate_speed.py /app/data/videos/your
 
 ## Running Formal Tests
 
-```bash
-# After the worker has processed some video and generated violations:
-docker compose exec worker python tests/run_system_tests.py
+After the worker has processed some video and generated violations, run the
+10-case suite against the live database + evidence volumes (any Python image
+works — the runner is stdlib-only):
 
-# Or run locally (if DB already exists):
-python tests/run_system_tests.py
+```bash
+docker run --rm \
+  -v "$PWD:/repo" -w /repo \
+  -v traffic_voilation_detection_system_db_data:/app/database \
+  -v traffic_voilation_detection_system_evidence_data:/app/outputs \
+  traffic-api:latest python tests/run_system_tests.py
 ```
+
+> The volume names follow `<compose-project>_db_data` and
+> `<compose-project>_evidence_data` — check `docker volume ls` if you cloned
+> into a differently-named directory.
+
+Results are saved to `tests/test_results.json` (gitignored).
 
 Tests 10 cases:
 
@@ -371,7 +381,7 @@ trivy image traffic-dashboard:latest --severity HIGH,CRITICAL
 | Member | Role |
 |--------|------|
 | Muhammad Jawad | Violation Detection Pipeline, Speed Calibration, Lane & U-Turn Detection |
-| Hamza Ali | License Plate Recognition, Database Design, API & Kubernetes |
+| Hamza Ali | License Plate Recognition, Database Design, API |
 | Irum Saba | Backend Integration, GUI/Dashboard |
 
 ---

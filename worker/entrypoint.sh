@@ -10,21 +10,19 @@
 #
 #  ── MODEL LOADING STRATEGY ──────────────────────────────────────────
 #
-#  OPTION A — LOCAL / DOCKER COMPOSE (Volume Mount):
-#    • docker-compose.yml mounts ./ml/:/app/models:ro
+#  OPTION A — DEFAULT / DOCKER COMPOSE (S3 Pull):
+#    • docker-compose.yml mounts ~/.aws read-only and sets MODEL_BUCKET
+#    • /app/models/ is empty on container start
+#    • This script verifies AWS credentials, then pulls models + videos
+#      from s3://MODEL_BUCKET/ and FAILS FAST if anything goes wrong
+#
+#  OPTION B — LOCAL VOLUME MOUNT (Development only):
+#    • Add - ./ml/:/app/models:ro to docker-compose.yml yourself
 #    • Models are already in /app/models/ when the container starts
-#    • The script detects the non-empty directory and SKIPS S3 download
+#    • The script detects them and SKIPS the S3 download
 #    • Fastest path — models are local files, no network needed
 #
-#  OPTION B — EKS / KUBERNETES (S3 Pull):
-#    • No volume mount available (or models PV empty)
-#    • /app/models/ is empty on container start
-#    • You MUST set the MODEL_BUCKET env var (e.g., "my-bucket")
-#    • The script pulls ALL .pt files from s3://MODEL_BUCKET/models/
-#    • Requires AWS CLI installed + IAM role / credentials configured
-#    • Slower — depends on S3 transfer speed
-#
-#  OPTION C — MANUAL COPY (Development / Debug):
+#  OPTION C — MANUAL COPY (Debug):
 #    • Copy .pt / .onnx files directly into /app/models/ in a custom image
 #    • Or run: docker exec -it traffic-worker bash
 #    • Then manual download / copy into /app/models/
