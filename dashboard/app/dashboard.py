@@ -7,7 +7,6 @@ Run with:  streamlit run app/dashboard.py
 
 import os
 import sys
-import time
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -208,14 +207,14 @@ def page_dashboard():
             fig = px.pie(values=values, names=labels,
                          title="Violation Share",
                          color_discrete_sequence=px.colors.qualitative.Bold)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col_b:
             fig2 = px.bar(x=labels, y=values,
                           title="Violations by Type",
                           labels={"x": "Type", "y": "Count"},
                           color=values, color_continuous_scale="Reds")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
     elif stats:
         st.bar_chart({VIOLATIONS.get(k, k): v for k, v in stats.items()})
@@ -262,7 +261,7 @@ def page_dashboard():
     display_cols = [c for c in show_cols if c in df.columns]
     display_df = df[display_cols].rename(columns=show_cols)
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
     # ── CSV export ────────────────────────────────────────────────────
     csv_bytes = display_df.to_csv(index=False).encode()
@@ -315,7 +314,7 @@ def page_dashboard():
             # For the dashboard service, evidence images are on a shared volume at /app/outputs
             local_path = Path(ev_path)
             if local_path.exists():
-                st.image(str(local_path), caption="Evidence Image", use_container_width=True)
+                st.image(str(local_path), caption="Evidence Image", width="stretch")
             else:
                 # If running in separate containers, try fetching via API
                 # Note: evidence images are served via shared volume, not HTTP
@@ -331,48 +330,103 @@ def page_live():
     col_status, col_refresh, col_interval = st.columns([3, 1, 2])
 
     with col_refresh:
-        manual_refresh = st.button("Refresh Now", type="primary", use_container_width=True)
+        st.button("Refresh Now", type="primary", width="stretch")
 
     with col_interval:
         auto_refresh = st.toggle("Auto-refresh", value=True,
                                  help="The table and violation counts below update automatically at this interval.")
         refresh_sec  = st.slider("Refresh every (sec)", 3, 30, 5, label_visibility="collapsed")
 
-    # ── system status ─────────────────────────────────────────────────────
-    # Uses worker heartbeat (latest_frame.jpg mtime) to determine if the
-    # worker is actively processing, regardless of whether violations exist.
-    ws = fetch_worker_status()
-    worker_status = ws.get('status', 'offline')
-    heartbeat_age = ws.get('worker_heartbeat_age', -1)
+    # ── auto-refreshing data (status + counts + table) ───────────────────
+    # Auto-refresh runs inside a st.fragment(run_every=...) instead of a
+    # time.sleep() + st.rerun() loop. Fragments rerun IN PLACE without
+    # reloading the whole frontend module graph, which avoids the
+    # intermittent browser error "Failed to fetch dynamically imported
+    # module" (Checkbox.js, Slider.js chunks) that full-page reruns can
+    # trigger. run_every must be a number/timedelta (or None = no auto
+    # rerun) — callables are not accepted by this Streamlit version.
+    @st.fragment(run_every=refresh_sec if auto_refresh else None)
+    def live_data_fragment():
+        # ── system status ─────────────────────────────────────────────
+        # Uses worker heartbeat (latest_frame.jpg mtime) to determine if the
+        # worker is actively processing, regardless of whether violations exist.
+        ws = fetch_worker_status()
+        worker_status = ws.get('status', 'offline')
+        heartbeat_age = ws.get('worker_heartbeat_age', -1)
 
-    if worker_status == 'active':
-        status_color = "#2ecc71"
-        status_icon  = "[ACTIVE]"
-        status_text  = f"Worker ACTIVE — detecting {int(heartbeat_age)}s ago"
-    elif worker_status == 'idle':
-        status_color = "#f39c12"
-        status_icon  = "[IDLE]"
-        status_text  = f"Worker IDLE — last heartbeat {int(heartbeat_age)}s ago"
-    elif worker_status == 'offline' and heartbeat_age > 0:
-        status_color = "#e74c3c"
-        status_icon  = "[OFFLINE]"
-        status_text  = "Worker OFFLINE — no heartbeat"
-    else:
-        status_color = "#7f8c8d"
-        status_icon  = "[NO DATA]"
-        status_text  = "No data — start the worker service to begin detection"
+        if worker_status == 'active':
+            status_color = "#2ecc71"
+            status_icon  = "[ACTIVE]"
+            status_text  = f"Worker ACTIVE — detecting {int(heartbeat_age)}s ago"
+        elif worker_status == 'idle':
+            status_color = "#f39c12"
+            status_icon  = "[IDLE]"
+            status_text  = f"Worker IDLE — last heartbeat {int(heartbeat_age)}s ago"
+        elif worker_status == 'offline' and heartbeat_age > 0:
+            status_color = "#e74c3c"
+            status_icon  = "[OFFLINE]"
+            status_text  = "Worker OFFLINE — no heartbeat"
+        else:
+            status_color = "#7f8c8d"
+            status_icon  = "[NO DATA]"
+            status_text  = "No data — start the worker service to begin detection"
 
-    with col_status:
-        st.markdown(
-            f'<div style="background:{status_color}22; border-left:5px solid {status_color}; '
-            f'border-radius:8px; padding:0.75rem 1.2rem; color:{status_color}; font-weight:700;">'
-            f'{status_icon}  {status_text}</div>',
-            unsafe_allow_html=True
-        )
+        with col_status:
+            st.markdown(
+                f'<div style="background:{status_color}22; border-left:5px solid {status_color}; '
+                f'border-radius:8px; padding:0.75rem 1.2rem; color:{status_color}; font-weight:700;">'
+                f'{status_icon}  {status_text}</div>',
+                unsafe_allow_html=True
+            )
 
-    st.markdown("")
+        st.markdown("")
+
+        # ── live counts ───────────────────────────────────────────────────
+        st.subheader("Live Violation Counts")
+        all_violations = fetch_violations(limit=5000)
+        type_counts = {}
+        for v in all_violations:
+            vt = v['violation_type']
+            type_counts[vt] = type_counts.get(vt, 0) + 1
+
+        count_cols = st.columns(max(1, len(type_counts)) if type_counts else 4)
+        icons = {'NO_HELMET': '[H]', 'OVER_SPEED': '[S]', 'RED_LIGHT': '[R]',
+                 'LANE_VIOLATION': '[L]', 'ILLEGAL_UTURN': '[U]'}
+
+        if type_counts:
+            for i, (vtype, count) in enumerate(sorted(type_counts.items())):
+                with count_cols[i % len(count_cols)]:
+                    icon = icons.get(vtype, '[V]')
+                    label = VIOLATIONS.get(vtype, vtype.replace('_', ' ').title())
+                    st.metric(f"{icon} {label}", count)
+        else:
+            st.info("No violations yet. Start the worker to begin detection.")
+
+        st.markdown("")
+
+        # ── live feed table ───────────────────────────────────────────────
+        st.subheader("Latest Violations (Live Feed)")
+        recent = fetch_violations(limit=15)
+
+        if recent:
+            rows = []
+            for v in recent:
+                rows.append({
+                    'Timestamp':   str(v.get('timestamp', ''))[:19],
+                    'Violation':   VIOLATIONS.get(v['violation_type'],
+                                   v['violation_type'].replace('_', ' ').title()),
+                    'Vehicle':     v.get('vehicle_type') or '—',
+                    'Plate':       v.get('license_plate') or '—',
+                    'Speed':       f"{v['speed']:.0f} km/h" if v.get('speed') else '—',
+                    'Confidence':  f"{v['confidence']:.0%}" if v.get('confidence') else '—',
+                })
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        else:
+            st.info("Feed is empty -- no violations recorded yet.")
 
     # ── embedded live stream ─────────────────────────────────────────────
+    # The MJPEG <img> is self-updating, so it stays OUTSIDE the auto-refresh
+    # fragment — it is never torn down or re-created by periodic refreshes.
     st.subheader("📹 Live Detection Feed")
 
     stream_src = f"{STREAM_URL}/mjpeg"
@@ -425,54 +479,11 @@ def page_live():
     )
     st.caption("The video feed updates live — no auto-refresh needed for the stream itself.")
 
-    # ── live counts ───────────────────────────────────────────────────────
-    st.subheader("Live Violation Counts")
-    all_violations = fetch_violations(limit=5000)
-    type_counts = {}
-    for v in all_violations:
-        vt = v['violation_type']
-        type_counts[vt] = type_counts.get(vt, 0) + 1
+    # Render the auto-refreshing section (the fragment re-runs in place).
+    live_data_fragment()
 
-    count_cols = st.columns(max(1, len(type_counts)) if type_counts else 4)
-    icons = {'NO_HELMET': '[H]', 'OVER_SPEED': '[S]', 'RED_LIGHT': '[R]',
-             'LANE_VIOLATION': '[L]', 'ILLEGAL_UTURN': '[U]'}
-
-    if type_counts:
-        for i, (vtype, count) in enumerate(sorted(type_counts.items())):
-            with count_cols[i % len(count_cols)]:
-                icon = icons.get(vtype, '[V]')
-                label = VIOLATIONS.get(vtype, vtype.replace('_', ' ').title())
-                st.metric(f"{icon} {label}", count)
-    else:
-        st.info("No violations yet. Start the worker to begin detection.")
-
-    st.markdown("")
-
-    # ── live feed table ───────────────────────────────────────────────────
-    st.subheader("Latest Violations (Live Feed)")
-    recent = fetch_violations(limit=15)
-
-    if recent:
-        rows = []
-        for v in recent:
-            rows.append({
-                'Timestamp':   str(v.get('timestamp', ''))[:19],
-                'Violation':   VIOLATIONS.get(v['violation_type'],
-                               v['violation_type'].replace('_', ' ').title()),
-                'Vehicle':     v.get('vehicle_type') or '—',
-                'Plate':       v.get('license_plate') or '—',
-                'Speed':       f"{v['speed']:.0f} km/h" if v.get('speed') else '—',
-                'Confidence':  f"{v['confidence']:.0%}" if v.get('confidence') else '—',
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("Feed is empty -- no violations recorded yet.")
-
-    # ── auto-refresh ─────────────────────────────────────────────────────
-    if auto_refresh or manual_refresh:
-        if auto_refresh:
-            time.sleep(refresh_sec)
-        st.rerun()
+    # A "Refresh Now" click triggers a full rerun, which also refreshes the
+    # fragment content above — no extra logic needed.
 
 
 def page_settings():
