@@ -88,6 +88,11 @@ services:
       # them into /app/models and /app/data/videos on container start.
       - MODEL_BUCKET=traffic-violation-project-data-models
       - AWS_DEFAULT_REGION=us-east-1
+      # Fail fast: never fall back to instance-metadata lookups inside the
+      # container. With the ~/.aws mount this is unused anyway, but if the
+      # mount is missing the aws-cli errors immediately instead of hanging
+      # on an IMDS timeout, making the failure obvious in the logs.
+      - AWS_EC2_METADATA_DISABLED=true
 
     healthcheck:
       test: ["CMD", "test", "-f", "/app/database/violations.db"]

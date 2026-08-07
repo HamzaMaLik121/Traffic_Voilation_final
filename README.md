@@ -5,7 +5,7 @@
 
 An intelligent, real-time traffic violation detection system using computer vision and deep learning. Detects **5 violation types** simultaneously from CCTV footage, stores evidence in a SQLite database, and provides a live monitoring web dashboard.
 
-Built with a **3-service microservices architecture** using Docker Compose and Kubernetes.
+Built with a **3-service microservices architecture** using Docker Compose.
 
 ---
 
@@ -41,7 +41,7 @@ Built with a **3-service microservices architecture** using Docker Compose and K
 
 ### Data Flow
 
-1. **Worker** reads video files from the mounted `./data/` folder (or webcam)
+1. **Worker** pulls model weights and test videos from **S3** on startup (see Quick Start below)
 2. **Worker** runs YOLOv8 detection + EasyOCR on every 3rd frame
 3. **Worker** writes violations to the shared SQLite database (`db_data` volume)
 4. **Worker** saves evidence JPGs + `latest_frame.jpg` to the shared outputs volume (`evidence_data`)
@@ -93,44 +93,50 @@ worker ──(writes to)──► evidence_data ◄──(reads from)── dash
 ## Quick Start (Docker Compose)
 
 ### Prerequisites
+
 - Docker Engine 24+ with Docker Compose plugin
+- AWS CLI configured on the host (`aws configure`) with credentials that can read the project S3 bucket
 - At least 4 GB RAM allocated to Docker
 - ~3 GB free disk space for images + models
 
-### Step 1 — Prepare model weights
-
-Place trained YOLOv8 model weights in the `ml/` directory:
-
-```
-ml/
-├── vehicle_detector/weights/best.pt       # Vehicle detection
-├── helmet_detector/weights/best.pt        # Helmet detection
-├── traffic_light_detector/weights/best.pt # Traffic light recognition
-├── lpr_detector/weights/best.pt           # License plate detection
-└── lane_detector/weights/yolop-640-640.onnx  # Lane detection (optional)
-```
-
-> **Note:** A fallback `yolov8n.pt` is included in the worker image for COCO-based vehicle detection. Trained models give better accuracy.
-
-### Step 2 — Add test video
-
-Place an `.mp4` or `.avi` file in `data/videos/`:
+### Step 1 — Clone the repository
 
 ```bash
-mkdir -p data/videos
-cp /path/to/your/test_video.mp4 data/videos/
+git clone https://github.com/HamzaMaLik121/Traffic_voilation_detection_system.git
+cd Traffic_voilation_detection_system
 ```
+
+### Step 2 — Configure AWS credentials
+
+Model weights and test videos are **not** stored in the repo (they're gitignored).
+The worker pulls them automatically from S3 on container startup.
+
+```bash
+# The project S3 bucket is: traffic-violation-project-data-models
+aws configure
+# Enter your AWS Access Key ID, Secret Access Key, and region (us-east-1)
+```
+
+> Your AWS credentials are mounted read-only into the worker container
+> (`~/.aws` → `/root/.aws`). Only the worker needs S3 access — the API and
+> dashboard never touch S3.
 
 ### Step 3 — Build and start
 
 ```bash
-# Build all three images
-docker compose build
+docker compose up --build
+```
 
-# Start all services
-docker compose up -d
+That's it — the worker's `entrypoint.sh` will:
 
-# Watch worker logs
+1. Verify your AWS credentials (`aws sts get-caller-identity`)
+2. Sync model weights from `s3://traffic-violation-project-data-models/models/` into `/app/models/`
+3. Sync test videos from `s3://traffic-violation-project-data-models/data/videos/` into `/app/data/videos/`
+4. Fail fast with a clear error if credentials are missing or the sync fails
+
+If you only want to watch the worker logs:
+
+```bash
 docker compose logs -f worker
 ```
 
@@ -142,6 +148,7 @@ Open **http://localhost:8502** in your browser.
 |-----|-------------|
 | http://localhost:8502 | Streamlit Dashboard (violation records, charts, evidence) |
 | http://localhost:5001/health | API health check |
+| http://localhost:5001/docs/ | Swagger / OpenAPI interactive docs |
 | http://localhost:5001/statistics | API — violation statistics (JSON) |
 | http://localhost:5001/violations | API — violation records (JSON) |
 | http://localhost:5001/live | Live MJPEG detection feed |
@@ -151,12 +158,12 @@ Open **http://localhost:8502** in your browser.
 ## Project Structure
 
 ```
-traffic_Devops/
+Traffic_voilation_detection_system/
 ├── docker-compose.yml              # Orchestrates all 3 services
 │
 ├── worker/                         # ML Detection Pipeline
 │   ├── Dockerfile                  # Worker container (~2.5 GB)
-│   ├── entrypoint.sh               # Model loading (local / S3)
+│   ├── entrypoint.sh               # S3 model/video sync + app start (fail-fast)
 │   ├── requirements-worker.txt     # Python deps (PyTorch, YOLO, EasyOCR)
 │   ├── live_test.py                # Main pipeline entry point
 │   ├── setup_lanes.py              # Interactive lane boundary drawing
@@ -184,9 +191,10 @@ traffic_Devops/
 │
 ├── api/                            # Flask REST API
 │   ├── Dockerfile                  # API container (~130 MB)
-│   ├── requirements-api.txt        # Python deps (Flask only)
+│   ├── requirements-api.txt        # Python deps (Flask + flasgger)
 │   ├── main.py                     # API entry point
 │   ├── config/config.py            # API configuration
+│   ├── tests/                      # API unit tests (pytest)
 │   └── app/
 │       ├── routes.py               # REST endpoints + MJPEG stream
 │       └── db/database.py          # Read-only DB access
@@ -197,37 +205,18 @@ traffic_Devops/
 │   ├── .streamlit/config.toml      # Streamlit theme/settings
 │   └── app/dashboard.py            # Dashboard pages (3 pages)
 │
-├── ml/                             # Trained model weights (mounted into worker)
-│   ├── vehicle_detector/weights/
-│   ├── helmet_detector/weights/
-│   ├── traffic_light_detector/weights/
-│   ├── lpr_detector/weights/
-│   └── lane_detector/weights/
+├── ml/                             # Model metadata (args.yaml, results.csv)
+│   └── <detector>/                 # Weights are pulled from S3, not committed
 │
-├── data/                           # Video data + training datasets
-│   ├── videos/                     # Place .mp4 files here
-│   ├── raw/                        # Raw datasets (gitignored)
-│   └── processed/                  # Processed datasets (gitignored)
+├── data/                           # Video data (gitignored, pulled from S3)
+│   └── videos/                     # test_video.mp4 synced at startup
 │
 ├── tests/                          # System tests
 │   └── run_system_tests.py         # 10-case formal test runner
 │
-├── src/                            # Training scripts (legacy / optional)
-│   └── training/
-│       └── train_models.py         # Model training pipeline
-│
-├── kubernetes/                     # Kubernetes deployment manifests
-│   ├── namespace.yml
-│   ├── pv-pvc.yml                  # Persistent volumes for DB + evidence
-│   ├── worker/deployment.yml
-│   ├── api/deployment.yml
-│   ├── api/service.yml
-│   ├── dashboard/deployment.yml
-│   └── dashboard/service.yml
-│
-└── security/                       # Security scan reports (Trivy)
-    ├── trivy-backend.txt
-    └── trivy-dashboard.txt
+└── src/                            # Training scripts (legacy / optional)
+    └── training/
+        └── train_models.py         # Model training pipeline
 ```
 
 ---
@@ -237,7 +226,6 @@ traffic_Devops/
 ### Worker (Detection Pipeline)
 
 ```bash
-# Build and run worker alone
 docker compose build worker
 docker compose up worker
 ```
@@ -245,7 +233,6 @@ docker compose up worker
 ### API (REST API)
 
 ```bash
-# Build and run API alone (no worker needed)
 docker compose build api
 docker compose up api
 # Test: curl http://localhost:5001/health
@@ -254,7 +241,6 @@ docker compose up api
 ### Dashboard (Streamlit UI)
 
 ```bash
-# Build and run dashboard (requires API)
 docker compose build dashboard
 docker compose up dashboard
 # Open: http://localhost:8502
@@ -267,7 +253,10 @@ docker compose up dashboard
 All configuration is done via **environment variables** in `docker-compose.yml`.
 
 | Variable | Default | Service | Description |
-|----------|---------|---------|-------------|
+|----------|---------|-------------|---------|
+| `MODEL_BUCKET` | `traffic-violation-project-data-models` | Worker | S3 bucket with `models/` and `data/videos/` |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Worker | AWS region for S3 sync |
+| `AWS_EC2_METADATA_DISABLED` | `true` | Worker | Fail fast on missing creds (no IMDS lookup) |
 | `LOOP_VIDEO` | `1` | Worker | Loop video when it ends (`0` = process once) |
 | `HEADLESS` | `1` | Worker | Disable `cv2.imshow()` GUI |
 | `MODEL_DIR` | `/app/models` | Worker | Path to model weights |
@@ -296,37 +285,6 @@ docker compose exec worker python tools/calibrate_speed.py /app/data/videos/your
 2. Click 2 points on the road that span a known real-world distance (e.g., lane width 3.5 m)
 3. Enter the real distance in metres when prompted
 4. Update the `PIXEL_TO_METER_RATIO` in `docker-compose.yml` under worker → environment
-
----
-
-## Kubernetes Deployment
-
-```bash
-# 1. Apply namespace and persistent volumes
-kubectl apply -f kubernetes/namespace.yml
-kubectl apply -f kubernetes/pv-pvc.yml
-
-# 2. Prepare model weights on each node
-#    Copy .pt files to /mnt/models/ on the node(s)
-
-# 3. Deploy services
-kubectl apply -f kubernetes/worker/deployment.yml
-kubectl apply -f kubernetes/api/deployment.yml
-kubectl apply -f kubernetes/api/service.yml
-kubectl apply -f kubernetes/dashboard/deployment.yml
-kubectl apply -f kubernetes/dashboard/service.yml
-```
-
-### Kubernetes Architecture
-
-| Component | Type | Replicas | Port |
-|-----------|------|----------|------|
-| Worker | Deployment | 1 | Internal only |
-| API | Deployment + Service (ClusterIP) | 2 | 5000 |
-| Dashboard | Deployment + Service (LoadBalancer) | 2 | 8501 |
-| Database | PersistentVolumeClaim (hostPath) | — | — |
-| Evidence | PersistentVolumeClaim (hostPath) | — | — |
-| Models | PersistentVolumeClaim (hostPath) | — | — |
 
 ---
 
@@ -369,7 +327,7 @@ Tests 10 cases:
 | REST API | Flask 3.0 |
 | Web Dashboard | Streamlit 1.59 |
 | Containerisation | Docker + Compose |
-| Orchestration | Kubernetes (EKS) |
+| Model/Data Storage | AWS S3 |
 | Language | Python 3.12 |
 
 ---

@@ -77,6 +77,38 @@ s3_sync_retry() {
     return 1
 }
 
+# ── AWS credential pre-flight check ──────────────────────────────────
+# Fail fast with a clear message if the container cannot authenticate to
+# AWS — before we waste time attempting (and retrying) S3 syncs.
+aws_check() {
+    local attempt
+    for attempt in 1 2 3; do
+        if aws sts get-caller-identity \
+            --region ${AWS_DEFAULT_REGION:-us-east-1} \
+            --output text >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "[aws] credential check failed (attempt $attempt/3) — retrying in 5s..."
+        sleep 5
+    done
+    return 1
+}
+
+# ── Fail-fast error helper ───────────────────────────────────────────
+# Prints a loud, single-line error and exits non-zero so the container
+# stops with a clear message in the logs instead of crashing later in
+# the Python app with a confusing traceback.
+fail_s3() {
+    echo "================================================================================"
+    echo "  ERROR: $1"
+    echo "================================================================================"
+    echo "  The worker cannot start without the models/videos it needs from S3."
+    echo "  Fix the issue above, then restart the container:"
+    echo "      docker compose up -d --force-recreate worker"
+    echo "================================================================================"
+    exit 1
+}
+
 # ── Check if required models are present ────────────────────────────
 # If all required weights exist (from a previous pull or volume mount),
 # skip the S3 download. Otherwise pull them from S3.
@@ -91,6 +123,13 @@ if [ "$models_missing" = true ]; then
     # ── Try S3 pull (Docker Compose without volume mount / EKS / cloud) ──
     if [ -n "$MODEL_BUCKET" ]; then
         echo "[models] MODEL_BUCKET=$MODEL_BUCKET — pulling from S3..."
+
+        # ── Fail fast if AWS credentials are missing/invalid ───────────
+        echo "[aws] Checking AWS credentials (aws sts get-caller-identity)..."
+        if ! aws_check; then
+            fail_s3 "AWS credentials are missing or invalid."
+        fi
+        echo "[aws] Credentials OK."
         echo "[models] Syncing s3://${MODEL_BUCKET}/models/ → /app/models/"
 
         # Detector weights are stored in S3 under models/ml/<detector>/weights/*
@@ -98,6 +137,23 @@ if [ "$models_missing" = true ]; then
         # map the S3 layout onto the runtime layout.
         s3_sync_retry "s3://${MODEL_BUCKET}/models/" "/app/models/" "--exclude ml/*"
         s3_sync_retry "s3://${MODEL_BUCKET}/models/ml/" "/app/models/"
+
+        # ── Fail fast if the S3 sync did not produce the required files ──
+        # Guards against wrong bucket names, missing prefixes, or a partial
+        # sync that reported success — the Python app would otherwise crash
+        # later with a confusing model-loading error.
+        still_missing=()
+        for m in "${REQUIRED_MODELS[@]}"; do
+            [ -f "$m" ] || still_missing+=("$m")
+        done
+        if [ "${#still_missing[@]}" -gt 0 ]; then
+            echo "[models] The following required files are still missing after S3 sync:"
+            for m in "${still_missing[@]}"; do
+                echo "  [MISSING] $m"
+            done
+            fail_s3 "S3 sync completed but required models are still missing — check MODEL_BUCKET ($MODEL_BUCKET) contents."
+        fi
+        echo "[models] All required models verified present after sync."
 
         # Input videos also live in S3 (data/videos/). Fetch them if the
         # container has none (i.e. no ./data volume mount).
