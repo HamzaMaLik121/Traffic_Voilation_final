@@ -46,6 +46,13 @@ echo "========================================"
 echo " Traffic Violation Detection — Starting"
 echo "========================================"
 
+# ── Clear stale readiness marker ────────────────────────────────────
+# /app/database/.worker-configured is gated by the compose healthcheck
+# (api + dashboard have depends_on: worker: condition: service_healthy).
+# Remove any marker from a previous run so a restarted worker cannot
+# appear "configured" before THIS run has finished syncing + verifying.
+rm -f /app/database/.worker-configured
+
 # ── Required model files ────────────────────────────────────────────
 # If any of these is missing we run the S3 pull, regardless of whether
 # /app/models/ is empty — guards against partial/failed syncs.
@@ -193,6 +200,27 @@ else
     echo "[models] All required models present:"
     find /app/models -name "*.pt" -o -name "*.onnx" | sort
     echo "[models] Skipping S3 download"
+fi
+
+# ── Readiness marker (written ONLY after models verified) ───────────
+# docker-compose's worker healthcheck requires BOTH this marker AND the
+# SQLite file the app creates on startup. api + dashboard declare
+# depends_on: worker: condition: service_healthy, so they stay down
+# until the worker has truly finished configuring (S3 sync + model
+# verification + app DB init), not merely started its container.
+all_models_ok=true
+for m in "${REQUIRED_MODELS[@]}"; do
+    [ -f "$m" ] || all_models_ok=false
+done
+
+if [ "$all_models_ok" = true ]; then
+    mkdir -p /app/database
+    touch /app/database/.worker-configured
+    echo "[worker] ✓ Readiness marker written: /app/database/.worker-configured"
+else
+    echo "[worker] ✗ Not all required models are present — worker NOT marked ready."
+    echo "[worker]   api/dashboard will stay down until this is fixed (see errors above)."
+    exit 1
 fi
 
 echo "========================================"

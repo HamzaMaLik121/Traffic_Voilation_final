@@ -95,7 +95,11 @@ services:
       - AWS_EC2_METADATA_DISABLED=true
 
     healthcheck:
-      test: ["CMD", "test", "-f", "/app/database/violations.db"]
+      # Healthy only when entrypoint.sh has finished the S3 sync and written
+      # the readiness marker (.worker-configured) AND the app has created
+      # the SQLite DB. api + dashboard depend on this, so they stay down
+      # until the worker is genuinely configured.
+      test: ["CMD-SHELL", "test -f /app/database/.worker-configured && test -f /app/database/violations.db"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -123,7 +127,12 @@ services:
     container_name: traffic-api
     restart: unless-stopped
 
-    # No dependency on worker — API can serve independently
+    # API waits until the worker has finished its S3 sync and is fully
+    # configured (readiness marker + DB present) before it starts serving.
+    depends_on:
+      worker:
+        condition: service_healthy
+
     volumes:
       # Read the same database the worker writes
       - db_data:/app/database
@@ -168,6 +177,10 @@ services:
     restart: unless-stopped
 
     depends_on:
+      # Start only after the worker is configured AND the API it talks to
+      # is healthy — never before the backend is ready.
+      worker:
+        condition: service_healthy
       api:
         condition: service_healthy
 

@@ -56,6 +56,22 @@ worker ──(writes to)──► evidence_data ◄──(reads from)── api 
 worker ──(writes to)──► evidence_data ◄──(reads from)── dashboard (evidence viewer)
 ```
 
+### Startup Order (Compose `depends_on`)
+
+`docker compose up` starts services in dependency order:
+
+1. **worker** starts first — `entrypoint.sh` verifies AWS credentials, syncs
+   models + videos from S3, then writes a readiness marker
+   (`/app/database/.worker-configured`) only after all required models are
+   verified present. The worker is marked **healthy** only once that marker
+   exists AND the app has created the SQLite database.
+2. **api** starts only after the worker is **healthy** (`service_healthy`).
+3. **dashboard** starts only after **both** the worker and the api are healthy.
+
+> On the very first run the S3 sync (models + ~300 MB video) can take
+> **10–20 minutes** — the API and dashboard will stay down until the worker
+> finishes. Watch progress with `docker compose logs -f worker`.
+
 ### Networking
 
 - All 3 services are on the default Docker Compose bridge network
@@ -134,7 +150,11 @@ That's it — the worker's `entrypoint.sh` will:
 3. Sync test videos from `s3://traffic-violation-project-data-models/data/videos/` into `/app/data/videos/`
 4. Fail fast with a clear error if credentials are missing or the sync fails
 
-If you only want to watch the worker logs:
+On first run the worker's S3 sync can take **10–20 minutes**. Because the
+API and dashboard declare `depends_on: worker: condition: service_healthy`,
+they will **not** start until the worker has finished configuring — so
+`docker compose up` may appear to sit at the worker step for a while. That's
+by design. Watch progress with:
 
 ```bash
 docker compose logs -f worker
