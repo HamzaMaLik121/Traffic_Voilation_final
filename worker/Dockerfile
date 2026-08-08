@@ -112,17 +112,22 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV LOOP_VIDEO=1
 ENV HEADLESS=1
-ENV MODEL_BUCKET=""
+# MODEL_BUCKET is defaulted here so even a plain `docker run traffic-worker`
+# auto-pulls models + videos from S3 (needs ~/.aws mounted or AWS_* env
+# vars). docker-compose.yml overrides it explicitly.
+ENV MODEL_BUCKET="traffic-violation-project-data-models"
 ENV AWS_DEFAULT_REGION="us-east-1"
 
 # ── Health check ────────────────────────────────────────────────────
 # The worker is healthy only when models are on disk AND the shared DB
-# exists. start-period is generous (900s) because on first boot the
-# container downloads ~350MB of models from S3 before the app starts.
+# exists. start-period is generous (1800s / 30 min) because on first boot
+# the container downloads ~350MB of models + the test video from S3
+# before the app starts — failures during that window never count.
 # NOTE: docker-compose.yml overrides this healthcheck — keep them in sync
-#       (both use a 900s start period).
-HEALTHCHECK --interval=30s --timeout=10s --retries=10 --start-period=900s \
-    CMD /app/healthcheck.sh || exit 1
+#       (both use a 1800s start period).
+# 'sh' prefix makes this independent of the exec bit (see compose note).
+HEALTHCHECK --interval=30s --timeout=10s --retries=10 --start-period=1800s \
+    CMD sh /app/healthcheck.sh
 
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["python", "live_test.py"]

@@ -104,13 +104,16 @@ services:
 
     healthcheck:
       # Healthy only when models are on disk AND the shared DB exists.
-      # start_period 900s gives the first-boot S3 download (~350MB of
-      # weights + optional videos) time to complete before failures count.
-      test: ["CMD", "/app/healthcheck.sh"]
+      # start_period 1800s (30 min) gives the first-boot S3 download
+      # (~350MB of weights + the test video) time to complete on any
+      # connection before failures start counting.
+      # 'sh' prefix makes this independent of the exec bit — works even
+      # if the script loses +x (Windows checkouts, bind mounts, etc.)
+      test: ["CMD", "sh", "/app/healthcheck.sh"]
       interval: 15s
       timeout: 10s
       retries: 20
-      start_period: 900s
+      start_period: 1800s
 
     deploy:
       resources:

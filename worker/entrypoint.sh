@@ -12,12 +12,15 @@
 #
 #  The heavy assets (trained weights, videos) are NOT stored in Git.
 #  They live in S3 (bucket: traffic-violation-project-data-models).
-#  This script pulls them automatically on first container start:
+#  This script pulls them automatically on every container start — no
+#  manual download step, whether you run `docker compose up`, build the
+#  Dockerfile yourself, or run the image on EC2/EKS:
 #
-#    1. Verify AWS credentials are configured (aws configure)
-#    2. Sync s3://$MODEL_BUCKET/models/  → /app/models/   (detector weights)
-#    3. Sync s3://$MODEL_BUCKET/data/videos/ → /app/data/videos/ (input video)
-#    4. Verify every required weight file exists — fail loudly if not
+#    1. Check whether the required weights are already on disk
+#       (cached in the model_data volume from a previous run)
+#    2. If missing → verify AWS credentials → sync models from S3
+#    3. Verify every required weight file exists — fail loudly if not
+#    4. Sync videos from S3 whenever /app/data/videos is empty
 #    5. Write /app/models/.models_ready marker (used by the healthcheck)
 #    6. exec the application CMD
 #
@@ -31,7 +34,8 @@
 #    /app/models/yolov8n.pt  (COCO backbone — primary vehicle detector)
 #
 #  ── ENVIRONMENT VARIABLES ──────────────────────────────────────────
-#  MODEL_BUCKET       — S3 bucket name for model pull (required)
+#  MODEL_BUCKET       — S3 bucket name for model pull (default set in
+#                       the Dockerfile / docker-compose.yml)
 #  AWS_DEFAULT_REGION — AWS region (default: us-east-1)
 # ═════════════════════════════════════════════════════════════════════
 
@@ -60,7 +64,9 @@ REQUIRED_MODELS=(
 s3_sync_retry() {
     local src="$1" dst="$2" extra="${3:-}" attempt
     for attempt in 1 2 3 4 5; do
-        if aws s3 sync "$src" "$dst" $extra \
+        # timeout 600 guards against a hung transfer (flaky network, stalled
+        # TLS) so one stuck `aws s3 sync` can never block startup forever.
+        if timeout 600 aws s3 sync "$src" "$dst" $extra \
             --region ${AWS_DEFAULT_REGION:-us-east-1} \
             --only-show-errors; then
             return 0
@@ -72,9 +78,27 @@ s3_sync_retry() {
     return 1
 }
 
-# ── Check if required models are present ────────────────────────────
-# If all required weights exist (from a previous pull or volume mount),
-# skip the S3 download. Otherwise pull them from S3.
+# ── AWS credential check ────────────────────────────────────────────
+# Give a clear, actionable error instead of a cryptic S3 permission
+# failure 3 minutes later. Only called when an S3 pull is actually needed.
+check_aws_credentials() {
+    # timeout 30 guards against a hang when no credentials are present
+    # (e.g. metadata endpoint stalls) — fail fast with a clear message.
+    if timeout 30 aws sts get-caller-identity >/dev/null 2>&1; then
+        echo "[aws] Credentials OK."
+        return 0
+    fi
+    echo "[aws] ERROR: AWS credentials not found or invalid."
+    echo "[aws]"
+    echo "[aws] Run 'aws configure' on the host machine, then start again:"
+    echo "[aws]   aws configure          # AWS Access Key, Secret Key, region us-east-1"
+    echo "[aws]   docker compose up"
+    echo "[aws]"
+    echo "[aws] The worker pulls models + videos from S3 automatically."
+    return 1
+}
+
+# ── Model pull (only when required weights are missing) ─────────────
 models_missing=false
 for m in "${REQUIRED_MODELS[@]}"; do
     [ -f "$m" ] || models_missing=true
@@ -83,25 +107,8 @@ done
 if [ "$models_missing" = true ]; then
     echo "[models] Required models missing — checking S3 pull..."
 
-    # ── Try S3 pull (Docker Compose / EC2 / EKS with IAM role) ──
     if [ -n "$MODEL_BUCKET" ]; then
-        # ── AWS credential check ──────────────────────────────────
-        # Only needed when we actually pull from S3 (models cached in
-        # the model_data volume skip this entirely). Give a clear,
-        # actionable error instead of a cryptic S3 permission failure
-        # 3 minutes later.
-        if aws sts get-caller-identity >/dev/null 2>&1; then
-            echo "[aws] Credentials OK."
-        else
-            echo "[aws] ERROR: AWS credentials not found or invalid."
-            echo "[aws]"
-            echo "[aws] Run 'aws configure' on the host machine, then start again:"
-            echo "[aws]   aws configure          # AWS Access Key, Secret Key, region us-east-1"
-            echo "[aws]   docker compose up"
-            echo "[aws]"
-            echo "[aws] The worker pulls models + videos from S3 automatically."
-            exit 1
-        fi
+        check_aws_credentials
 
         echo "[models] MODEL_BUCKET=$MODEL_BUCKET — pulling from S3..."
         echo "[models] Syncing s3://${MODEL_BUCKET}/models/ → /app/models/"
@@ -113,22 +120,6 @@ if [ "$models_missing" = true ]; then
         #   sync 2: models/ml/<detector>/...       → /app/models/<detector>/...
         s3_sync_retry "s3://${MODEL_BUCKET}/models/" "/app/models/" "--exclude ml/*"
         s3_sync_retry "s3://${MODEL_BUCKET}/models/ml/" "/app/models/"
-
-        # Input videos also live in S3 (data/videos/). Fetch them if the
-        # container has none (i.e. no ./data volume mount).
-        mkdir -p /app/data/videos
-        if [ -z "$(ls -A /app/data/videos 2>/dev/null)" ]; then
-            echo "[videos] /app/data/videos is empty — pulling videos from S3..."
-            if s3_sync_retry "s3://${MODEL_BUCKET}/data/videos/" "/app/data/videos/"; then
-                echo "[videos] Video sync complete:"
-                ls -la /app/data/videos
-            else
-                echo "[videos] WARNING: video sync failed — worker will wait for a video source."
-                echo "[videos]          (You can mount one at /app/data/videos/ and restart.)"
-            fi
-        else
-            echo "[videos] Videos already present — skipping S3 download"
-        fi
 
         # ── Verify every required file survived the sync ─────────────
         # Fail loudly (and let restart: on-failure retry) instead of
@@ -148,9 +139,6 @@ if [ "$models_missing" = true ]; then
             exit 1
         fi
 
-        # Readiness marker — consumed by the healthcheck so api/dashboard
-        # only start once the models are actually on disk.
-        touch /app/models/.models_ready
         echo "[models] S3 sync complete — all required models present."
         echo "[models] Contents:"
         find /app/models \( -name "*.pt" -o -name "*.onnx" \) | sort
@@ -165,10 +153,43 @@ if [ "$models_missing" = true ]; then
 else
     # ── Required models found (volume mount or previous pull) ───────
     # No AWS needed — models are already cached (model_data volume).
+    echo "[models] All required models present — skipping S3 download"
+fi
+
+# ── Video pull (independent of the model cache) ─────────────────────
+# Runs whenever /app/data/videos is empty — so a wiped video_data volume
+# re-pulls the input video even when the models were already cached.
+mkdir -p /app/data/videos
+if [ -z "$(ls -A /app/data/videos 2>/dev/null)" ]; then
+    if [ -n "$MODEL_BUCKET" ] && check_aws_credentials; then
+        echo "[videos] /app/data/videos is empty — pulling videos from S3..."
+        if s3_sync_retry "s3://${MODEL_BUCKET}/data/videos/" "/app/data/videos/"; then
+            echo "[videos] Video sync complete:"
+            ls -la /app/data/videos
+        else
+            echo "[videos] WARNING: video sync failed — worker will wait for a video source."
+            echo "[videos]          (You can mount one at /app/data/videos/ and restart.)"
+        fi
+    else
+        echo "[videos] No videos present and S3 not available — worker will wait for a video source."
+    fi
+else
+    echo "[videos] Videos already present — skipping S3 download"
+fi
+
+# ── Readiness marker ────────────────────────────────────────────────
+# Written whenever the required models are verified on disk. Consumed by
+# the healthcheck so api/dashboard only start once models are ready.
+if [ ! -f /app/models/.models_ready ]; then
+    # Verify again (cheap) before declaring readiness — this also covers
+    # the case where models were cached but the marker was deleted.
+    for m in "${REQUIRED_MODELS[@]}"; do
+        if [ ! -f "$m" ]; then
+            echo "[models] ERROR: required model missing at startup: $m"
+            exit 1
+        fi
+    done
     touch /app/models/.models_ready
-    echo "[models] All required models present:"
-    find /app/models \( -name "*.pt" -o -name "*.onnx" \) | sort
-    echo "[models] Skipping S3 download"
 fi
 
 echo "========================================"

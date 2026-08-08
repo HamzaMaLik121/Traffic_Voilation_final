@@ -119,9 +119,13 @@ aws configure
 
 ```bash
 git clone <this-repo-url>
-cd traffic_Devops
+cd Traffic_voilation_detection_system
 
+# Option A: one command (build + start)
 docker compose up -d --build
+
+# Option B: use the Makefile (same thing)
+make up-build
 ```
 
 What happens automatically on first boot:
@@ -141,6 +145,44 @@ So the dashboard and API never start before the model data has been pulled.
  docker compose logs -f worker
 ```
 
+### One-click reset (`make clean` / `make reset`)
+
+Everything (containers, named volumes, images, build cache) can be wiped with
+one command — the next `docker compose up` then re-pulls everything from S3
+automatically:
+
+```bash
+make clean   # wipe containers + volumes + images + build cache
+make up      # rebuild + start — auto-pulls models/videos from S3 again
+
+# Or the full cycle in one go:
+make reset   # clean + up-build
+```
+
+### Manual `docker build` (no compose) — still fully automatic
+
+You can also build and run the worker image by hand. The S3 pull happens in
+`entrypoint.sh` at container start, so nothing is downloaded manually:
+
+```bash
+# Build
+ docker build -t traffic-worker:latest worker/
+
+# Run — models + videos are auto-pulled from S3 on start.
+# Mount your AWS credentials (or export AWS_ACCESS_KEY_ID etc.) so the
+# container can authenticate.
+ docker run -d --name traffic-worker \
+   -v ~/.aws:/root/.aws:ro \
+   -v traffic_db:/app/database -v traffic_out:/app/outputs \
+   traffic-worker:latest
+
+# MODEL_BUCKET defaults to traffic-violation-project-data-models in the image.
+```
+
+> The image's default `MODEL_BUCKET` means a bare `docker run traffic-worker`
+> will attempt the S3 pull; only AWS credentials are still required (from
+> `~/.aws` or `AWS_*` env vars).
+
 > **First boot takes a few minutes** — the worker downloads ~350MB of models
 > (+ the test video) from S3 before `api` and `dashboard` are allowed to start.
 > You'll see `Container traffic-worker Waiting` while this happens. That's by
@@ -150,6 +192,22 @@ So the dashboard and API never start before the model data has been pulled.
 > AWS error, your credentials are wrong/expired — re-run `aws configure`.
 > If it's stuck on `[s3] ERROR`, check that your IAM user can `s3:GetObject`
 > on the `traffic-violation-project-data-models` bucket.
+
+> **`dependency failed to start: container traffic-worker is unhealthy`?**
+> You are running an **old copy of the code** (this error comes from the
+> pre-fix compose file that had a too-short healthcheck window). Make sure
+> you are on the latest `master` (`git pull origin master` or re-clone), then
+> wipe the old state and rebuild:
+>
+> ```bash
+> git pull origin master
+> docker rm -f traffic-worker traffic-api traffic-dashboard  # clear old containers
+> docker compose up -d --build   # or: make reset
+> ```
+>
+> The first boot legitimately takes a few minutes while the worker downloads
+> models from S3 — `Container traffic-worker Waiting` during that time is
+> normal and by design (api/dashboard wait until the worker is fully ready).
 
 ### Step 3 — Access the dashboard
 
@@ -289,6 +347,20 @@ All configuration is done via **environment variables** in `docker-compose.yml`.
 | `HEADLESS` | `1` | Worker | Disable `cv2.imshow()` GUI |
 | `MODEL_DIR` | `/app/models` | Worker | Path to model weights |
 | `MODEL_BUCKET` | `traffic-violation-project-data-models` | Worker | S3 bucket with `models/` + `data/videos/` — auto-pulled on boot |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Worker | Region for the S3 bucket |
+
+## Makefile Commands
+
+| Command | What it does |
+|---------|--------------|
+| `make up` | Start services (`docker compose up -d`) — auto-pulls models from S3 |
+| `make up-build` | Force-rebuild images then start |
+| `make build` | Build the 3 images |
+| `make clean` | **One-click wipe** — containers, volumes, images, build cache |
+| `make reset` | `clean` + `up-build` — full wipe, rebuild, start |
+| `make logs` / `make logs-worker` | Follow logs |
+| `make ps` | Show container status |
+| `make stop` / `make down` | Stop / stop + remove containers |
 | `CONFIDENCE_THRESHOLD` | `0.25` | Worker | YOLO detection confidence threshold |
 | `SPEED_LIMIT_KMH` | `60` | Worker | Speed limit for over-speed violations |
 | `PIXEL_TO_METER_RATIO` | `0.011640` | Worker | Camera calibration ratio |
