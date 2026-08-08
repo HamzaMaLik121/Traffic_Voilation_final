@@ -291,15 +291,6 @@ traffic_Devops/
 │   └── training/
 │       └── train_models.py         # Model training pipeline
 │
-├── kubernetes/                     # Kubernetes deployment manifests
-│   ├── namespace.yml
-│   ├── pv-pvc.yml                  # Persistent volumes for DB + evidence
-│   ├── worker/deployment.yml
-│   ├── api/deployment.yml
-│   ├── api/service.yml
-│   ├── dashboard/deployment.yml
-│   └── dashboard/service.yml
-│
 └── security/                       # Security scan reports (Trivy)
     ├── trivy-backend.txt
     └── trivy-dashboard.txt
@@ -389,37 +380,6 @@ docker compose exec worker python tools/calibrate_speed.py /app/data/videos/your
 
 ---
 
-## Kubernetes Deployment
-
-```bash
-# 1. Apply namespace and persistent volumes
-kubectl apply -f kubernetes/namespace.yml
-kubectl apply -f kubernetes/pv-pvc.yml
-
-# 2. Prepare model weights on each node
-#    Copy .pt files to /mnt/models/ on the node(s)
-
-# 3. Deploy services
-kubectl apply -f kubernetes/worker/deployment.yml
-kubectl apply -f kubernetes/api/deployment.yml
-kubectl apply -f kubernetes/api/service.yml
-kubectl apply -f kubernetes/dashboard/deployment.yml
-kubectl apply -f kubernetes/dashboard/service.yml
-```
-
-### Kubernetes Architecture
-
-| Component | Type | Replicas | Port |
-|-----------|------|----------|------|
-| Worker | Deployment | 1 | Internal only |
-| API | Deployment + Service (ClusterIP) | 2 | 5000 |
-| Dashboard | Deployment + Service (LoadBalancer) | 2 | 8501 |
-| Database | PersistentVolumeClaim (hostPath) | — | — |
-| Evidence | PersistentVolumeClaim (hostPath) | — | — |
-| Models | PersistentVolumeClaim (hostPath) | — | — |
-
----
-
 ## Running Formal Tests
 
 ```bash
@@ -459,7 +419,7 @@ Tests 10 cases:
 | REST API | Flask 3.0 |
 | Web Dashboard | Streamlit 1.59 |
 | Containerisation | Docker + Compose |
-| Orchestration | Kubernetes (EKS) |
+| Orchestration | Docker Compose |
 | Language | Python 3.12 |
 
 ---
