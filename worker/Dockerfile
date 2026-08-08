@@ -67,8 +67,9 @@ COPY app/           ./app/
 COPY live_test.py   .
 COPY setup_lanes.py .
 COPY entrypoint.sh  .
+COPY healthcheck.sh .
 
-RUN chmod +x entrypoint.sh
+RUN chmod +x entrypoint.sh healthcheck.sh
 
 # Create runtime directories (mounted via volumes at runtime)
 # /app/data/videos is populated from S3 by entrypoint.sh when no volume
@@ -115,10 +116,13 @@ ENV MODEL_BUCKET=""
 ENV AWS_DEFAULT_REGION="us-east-1"
 
 # ── Health check ────────────────────────────────────────────────────
-# Checks if database file exists (created by worker on first violation)
-# start-period=60s gives time for model loading + first detection
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 --start-period=60s \
-    CMD test -f /app/database/violations.db || exit 1
+# The worker is healthy only when models are on disk AND the shared DB
+# exists. start-period is generous (900s) because on first boot the
+# container downloads ~350MB of models from S3 before the app starts.
+# NOTE: docker-compose.yml overrides this healthcheck — keep them in sync
+#       (both use a 900s start period).
+HEALTHCHECK --interval=30s --timeout=10s --retries=10 --start-period=900s \
+    CMD /app/healthcheck.sh || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["python", "live_test.py"]

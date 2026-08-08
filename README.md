@@ -92,49 +92,66 @@ worker ──(writes to)──► evidence_data ◄──(reads from)── dash
 
 ## Quick Start (Docker Compose)
 
+> **Zero manual steps.** Model weights and test videos are NOT stored in Git —
+> they are pulled automatically from S3 on first boot. Just clone, configure AWS,
+> and run `docker compose up`. That's it.
+
 ### Prerequisites
 - Docker Engine 24+ with Docker Compose plugin
 - At least 4 GB RAM allocated to Docker
 - ~3 GB free disk space for images + models
+- AWS CLI configured with credentials that can read the S3 bucket
+  (`traffic-violation-project-data-models`)
 
-### Step 1 — Prepare model weights
-
-Place trained YOLOv8 model weights in the `ml/` directory:
-
-```
-ml/
-├── vehicle_detector/weights/best.pt       # Vehicle detection
-├── helmet_detector/weights/best.pt        # Helmet detection
-├── traffic_light_detector/weights/best.pt # Traffic light recognition
-├── lpr_detector/weights/best.pt           # License plate detection
-└── lane_detector/weights/yolop-640-640.onnx  # Lane detection (optional)
-```
-
-> **Note:** A fallback `yolov8n.pt` is included in the worker image for COCO-based vehicle detection. Trained models give better accuracy.
-
-### Step 2 — Add test video
-
-Place an `.mp4` or `.avi` file in `data/videos/`:
+### Step 1 — Configure AWS (one-time)
 
 ```bash
-mkdir -p data/videos
-cp /path/to/your/test_video.mp4 data/videos/
+aws configure
+# AWS Access Key ID:     <your key>
+# AWS Secret Access Key: <your secret>
+# Default region name:   us-east-1
 ```
 
-### Step 3 — Build and start
+> The worker mounts `~/.aws` into the container and uses it to sync models +
+> videos from S3 automatically. (On EKS/Kubernetes, replace with an IAM role.)
+
+### Step 2 — Clone + start
 
 ```bash
-# Build all three images
-docker compose build
+git clone <this-repo-url>
+cd traffic_Devops
 
-# Start all services
-docker compose up -d
-
-# Watch worker logs
-docker compose logs -f worker
+docker compose up -d --build
 ```
 
-### Step 4 — Access the dashboard
+What happens automatically on first boot:
+
+1. `worker` starts → **pulls all model weights from S3** into `/app/models`
+   (vehicle, helmet, traffic-light, LPR, lane + `yolov8n.pt` backbone)
+2. `worker` **pulls the test video** from S3 into `/app/data/videos`
+3. `worker` becomes **healthy** only after models are on disk and the shared
+   database exists (`worker/healthcheck.sh`)
+4. `api` starts **only after worker is healthy** (`depends_on: service_healthy`)
+5. `dashboard` starts **only after api + worker are healthy**
+
+So the dashboard and API never start before the model data has been pulled.
+
+```bash
+# Watch the worker pull models from S3 and start
+ docker compose logs -f worker
+```
+
+> **First boot takes a few minutes** — the worker downloads ~350MB of models
+> (+ the test video) from S3 before `api` and `dashboard` are allowed to start.
+> You'll see `Container traffic-worker Waiting` while this happens. That's by
+> design — nothing starts before the model data is on disk.
+
+> **Stuck on `Waiting`?** Check the worker logs. If it's crash-looping with an
+> AWS error, your credentials are wrong/expired — re-run `aws configure`.
+> If it's stuck on `[s3] ERROR`, check that your IAM user can `s3:GetObject`
+> on the `traffic-violation-project-data-models` bucket.
+
+### Step 3 — Access the dashboard
 
 Open **http://localhost:8502** in your browser.
 
@@ -197,12 +214,12 @@ traffic_Devops/
 │   ├── .streamlit/config.toml      # Streamlit theme/settings
 │   └── app/dashboard.py            # Dashboard pages (3 pages)
 │
-├── ml/                             # Trained model weights (mounted into worker)
-│   ├── vehicle_detector/weights/
-│   ├── helmet_detector/weights/
-│   ├── traffic_light_detector/weights/
-│   ├── lpr_detector/weights/
-│   └── lane_detector/weights/
+├── ml/                             # Model metadata only (weights live in S3)
+│   ├── vehicle_detector/           #   weights are auto-pulled from S3
+│   ├── helmet_detector/            #   bucket: traffic-violation-project-data-models
+│   ├── traffic_light_detector/
+│   ├── lpr_detector/
+│   └── lane_detector/
 │
 ├── data/                           # Video data + training datasets
 │   ├── videos/                     # Place .mp4 files here
@@ -271,6 +288,7 @@ All configuration is done via **environment variables** in `docker-compose.yml`.
 | `LOOP_VIDEO` | `1` | Worker | Loop video when it ends (`0` = process once) |
 | `HEADLESS` | `1` | Worker | Disable `cv2.imshow()` GUI |
 | `MODEL_DIR` | `/app/models` | Worker | Path to model weights |
+| `MODEL_BUCKET` | `traffic-violation-project-data-models` | Worker | S3 bucket with `models/` + `data/videos/` — auto-pulled on boot |
 | `CONFIDENCE_THRESHOLD` | `0.25` | Worker | YOLO detection confidence threshold |
 | `SPEED_LIMIT_KMH` | `60` | Worker | Speed limit for over-speed violations |
 | `PIXEL_TO_METER_RATIO` | `0.011640` | Worker | Camera calibration ratio |

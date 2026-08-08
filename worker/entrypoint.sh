@@ -8,26 +8,18 @@
 #  Default CMD: python live_test.py
 #  Can also be used with: python setup_lanes.py, python diagnostic.py, etc.
 #
-#  ── MODEL LOADING STRATEGY ──────────────────────────────────────────
+#  ── MODEL LOADING STRATEGY (fully automated, zero manual steps) ─────
 #
-#  OPTION A — LOCAL / DOCKER COMPOSE (Volume Mount):
-#    • docker-compose.yml mounts ./ml/:/app/models:ro
-#    • Models are already in /app/models/ when the container starts
-#    • The script detects the non-empty directory and SKIPS S3 download
-#    • Fastest path — models are local files, no network needed
+#  The heavy assets (trained weights, videos) are NOT stored in Git.
+#  They live in S3 (bucket: traffic-violation-project-data-models).
+#  This script pulls them automatically on first container start:
 #
-#  OPTION B — EKS / KUBERNETES (S3 Pull):
-#    • No volume mount available (or models PV empty)
-#    • /app/models/ is empty on container start
-#    • You MUST set the MODEL_BUCKET env var (e.g., "my-bucket")
-#    • The script pulls ALL .pt files from s3://MODEL_BUCKET/models/
-#    • Requires AWS CLI installed + IAM role / credentials configured
-#    • Slower — depends on S3 transfer speed
-#
-#  OPTION C — MANUAL COPY (Development / Debug):
-#    • Copy .pt / .onnx files directly into /app/models/ in a custom image
-#    • Or run: docker exec -it traffic-worker bash
-#    • Then manual download / copy into /app/models/
+#    1. Verify AWS credentials are configured (aws configure)
+#    2. Sync s3://$MODEL_BUCKET/models/  → /app/models/   (detector weights)
+#    3. Sync s3://$MODEL_BUCKET/data/videos/ → /app/data/videos/ (input video)
+#    4. Verify every required weight file exists — fail loudly if not
+#    5. Write /app/models/.models_ready marker (used by the healthcheck)
+#    6. exec the application CMD
 #
 #  ── REQUIRED MODEL FILES ───────────────────────────────────────────
 #  The worker expects these model weights:
@@ -36,9 +28,10 @@
 #    /app/models/traffic_light_detector/weights/best.pt
 #    /app/models/lpr_detector/weights/best.pt
 #    /app/models/lane_detector/weights/yolop-640-640.onnx
+#    /app/models/yolov8n.pt  (COCO backbone — primary vehicle detector)
 #
 #  ── ENVIRONMENT VARIABLES ──────────────────────────────────────────
-#  MODEL_BUCKET       — S3 bucket name for model pull (EKS only)
+#  MODEL_BUCKET       — S3 bucket name for model pull (required)
 #  AWS_DEFAULT_REGION — AWS region (default: us-east-1)
 # ═════════════════════════════════════════════════════════════════════
 
@@ -57,9 +50,11 @@ REQUIRED_MODELS=(
     /app/models/traffic_light_detector/weights/best.pt
     /app/models/lpr_detector/weights/best.pt
     /app/models/lane_detector/weights/yolop-640-640.onnx
+    /app/models/yolov8n.pt
 )
 
 # ── Retry wrapper for aws s3 sync ───────────────────────────────────
+# NOTE: REQUIRED_MODELS below must stay in sync with worker/healthcheck.sh.
 # The Debian-packaged aws-cli v2.23.x has an intermittent segfault in the
 # S3 transfer path; a few retries make container startup deterministic.
 s3_sync_retry() {
@@ -88,14 +83,34 @@ done
 if [ "$models_missing" = true ]; then
     echo "[models] Required models missing — checking S3 pull..."
 
-    # ── Try S3 pull (Docker Compose without volume mount / EKS / cloud) ──
+    # ── Try S3 pull (Docker Compose / EC2 / EKS with IAM role) ──
     if [ -n "$MODEL_BUCKET" ]; then
+        # ── AWS credential check ──────────────────────────────────
+        # Only needed when we actually pull from S3 (models cached in
+        # the model_data volume skip this entirely). Give a clear,
+        # actionable error instead of a cryptic S3 permission failure
+        # 3 minutes later.
+        if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "[aws] Credentials OK."
+        else
+            echo "[aws] ERROR: AWS credentials not found or invalid."
+            echo "[aws]"
+            echo "[aws] Run 'aws configure' on the host machine, then start again:"
+            echo "[aws]   aws configure          # AWS Access Key, Secret Key, region us-east-1"
+            echo "[aws]   docker compose up"
+            echo "[aws]"
+            echo "[aws] The worker pulls models + videos from S3 automatically."
+            exit 1
+        fi
+
         echo "[models] MODEL_BUCKET=$MODEL_BUCKET — pulling from S3..."
         echo "[models] Syncing s3://${MODEL_BUCKET}/models/ → /app/models/"
 
         # Detector weights are stored in S3 under models/ml/<detector>/weights/*
         # but config.py expects /app/models/<detector>/weights/* — two syncs
         # map the S3 layout onto the runtime layout.
+        #   sync 1: models/*  (yolov8n.pt, worker/) → /app/models/   [ml/ excluded]
+        #   sync 2: models/ml/<detector>/...       → /app/models/<detector>/...
         s3_sync_retry "s3://${MODEL_BUCKET}/models/" "/app/models/" "--exclude ml/*"
         s3_sync_retry "s3://${MODEL_BUCKET}/models/ml/" "/app/models/"
 
@@ -104,40 +119,55 @@ if [ "$models_missing" = true ]; then
         mkdir -p /app/data/videos
         if [ -z "$(ls -A /app/data/videos 2>/dev/null)" ]; then
             echo "[videos] /app/data/videos is empty — pulling videos from S3..."
-            s3_sync_retry "s3://${MODEL_BUCKET}/data/videos/" "/app/data/videos/"
-            echo "[videos] Video sync complete:"
-            ls -la /app/data/videos
+            if s3_sync_retry "s3://${MODEL_BUCKET}/data/videos/" "/app/data/videos/"; then
+                echo "[videos] Video sync complete:"
+                ls -la /app/data/videos
+            else
+                echo "[videos] WARNING: video sync failed — worker will wait for a video source."
+                echo "[videos]          (You can mount one at /app/data/videos/ and restart.)"
+            fi
         else
             echo "[videos] Videos already present — skipping S3 download"
         fi
 
-        echo "[models] S3 sync complete"
+        # ── Verify every required file survived the sync ─────────────
+        # Fail loudly (and let restart: on-failure retry) instead of
+        # silently starting with a broken detector pipeline.
+        missing=()
+        for m in "${REQUIRED_MODELS[@]}"; do
+            [ -f "$m" ] || missing+=("$m")
+        done
+
+        if [ ${#missing[@]} -gt 0 ]; then
+            echo "[models] ERROR: The following required model files are STILL missing after the S3 sync:"
+            printf '  - %s\n' "${missing[@]}"
+            echo "[models]"
+            echo "[models] Check that s3://${MODEL_BUCKET}/models/ contains:"
+            echo "[models]   ml/<detector>/weights/*.pt  and  yolov8n.pt"
+            echo "[models] and that your AWS user has s3:GetObject / s3:ListBucket on this bucket."
+            exit 1
+        fi
+
+        # Readiness marker — consumed by the healthcheck so api/dashboard
+        # only start once the models are actually on disk.
+        touch /app/models/.models_ready
+        echo "[models] S3 sync complete — all required models present."
         echo "[models] Contents:"
-        find /app/models -name "*.pt" -o -name "*.onnx" | sort
+        find /app/models \( -name "*.pt" -o -name "*.onnx" \) | sort
     else
-        # ── No volume AND no S3 bucket — warn but don't crash ───────
-        # live_test.py will handle the missing models with a descriptive error
-        echo "[models] WARNING: MODEL_BUCKET is not set and models are missing"
-        echo "[models]"
-        echo "[models] LOCAL (Docker Compose):"
-        echo "[models]   Ensure ./ml/ folder exists and docker-compose.yml mounts it:"
-        echo "[models]     volumes:"
-        echo "[models]       - ./ml/:/app/models:ro"
-        echo "[models]"
-        echo "[models] EKS / Kubernetes:"
-        echo "[models]   Set the MODEL_BUCKET environment variable in your deployment:"
-        echo "[models]     env:"
-        echo "[models]       - name: MODEL_BUCKET"
-        echo "[models]         value: \"your-s3-bucket-name\""
-        echo "[models]   Also ensure the worker has an IAM role that can read from S3."
-        echo "[models]"
-        echo "[models] Continuing — live_test.py will report missing model files"
+        # ── No volume AND no S3 bucket — cannot run ─────────────────
+        echo "[models] ERROR: MODEL_BUCKET is not set and models are missing."
+        echo "[models] Set MODEL_BUCKET in docker-compose.yml (e.g. traffic-violation-project-data-models)"
+        echo "[models] or mount a volume containing the weights at /app/models."
+        exit 1
     fi
 
 else
     # ── Required models found (volume mount or previous pull) ───────
+    # No AWS needed — models are already cached (model_data volume).
+    touch /app/models/.models_ready
     echo "[models] All required models present:"
-    find /app/models -name "*.pt" -o -name "*.onnx" | sort
+    find /app/models \( -name "*.pt" -o -name "*.onnx" \) | sort
     echo "[models] Skipping S3 download"
 fi
 

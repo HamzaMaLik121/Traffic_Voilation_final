@@ -25,6 +25,23 @@ spec:
           value: "1"
         - name: MODEL_DIR
           value: "/app/models"
+        # Models + videos are pulled automatically from S3 by entrypoint.sh
+        # on first boot (no manual steps). Use an IAM role / IRSA instead
+        # of static credentials on EKS.
+        - name: MODEL_BUCKET
+          value: "traffic-violation-project-data-models"
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1"
+        readinessProbe:
+          # Healthy only once models are on disk AND the shared DB exists
+          # (entrypoint.sh pulls from S3 first). api/dashboard deployments
+          # only route traffic after this passes.
+          exec:
+            command: ["/app/healthcheck.sh"]
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 20
         resources:
           limits:
             memory: "3Gi"

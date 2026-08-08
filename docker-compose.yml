@@ -41,6 +41,14 @@
 #    worker ──(writes to)──► evidence_data ◄──(reads from)── dashboard (evidence images)
 #    worker ──(writes to)──► evidence_data ◄──(reads from)── api (MJPEG live feed)
 #
+#  STARTUP ORDERING (fully automated):
+#    1. worker starts, pulls models + videos from S3, starts the app
+#    2. worker becomes HEALTHY only when models are on disk AND the
+#       shared DB exists (see worker/healthcheck.sh)
+#    3. api starts only after worker is healthy (depends_on below)
+#    4. dashboard starts only after api (and worker) are healthy
+#    → Nothing starts before the model data has been pulled from S3.
+#
 #  Networking:
 #    • All 3 services are on the default Docker Compose network (bridge)
 #    • Services resolve each other by container_name: traffic-worker, traffic-api, traffic-dashboard
@@ -67,6 +75,11 @@ services:
       - db_data:/app/database
       - evidence_data:/app/outputs
 
+      # Models + videos are pulled from S3 on first boot and persisted
+      # here so restarts don't re-download ~350MB (entrypoint verifies).
+      - model_data:/app/models
+      - video_data:/app/data/videos
+
       # Lane configuration (read-only; also baked into the image)
       - ./worker/config/lane_config.json:/app/config/lane_config.json:ro
 
@@ -90,11 +103,14 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
 
     healthcheck:
-      test: ["CMD", "test", "-f", "/app/database/violations.db"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
+      # Healthy only when models are on disk AND the shared DB exists.
+      # start_period 900s gives the first-boot S3 download (~350MB of
+      # weights + optional videos) time to complete before failures count.
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 900s
 
     deploy:
       resources:
@@ -118,7 +134,12 @@ services:
     container_name: traffic-api
     restart: unless-stopped
 
-    # No dependency on worker — API can serve independently
+    # API waits for the worker to be fully ready (models pulled from S3
+    # + shared DB created) before it starts serving.
+    depends_on:
+      worker:
+        condition: service_healthy
+
     volumes:
       # Read the same database the worker writes
       - db_data:/app/database
@@ -163,6 +184,8 @@ services:
     restart: unless-stopped
 
     depends_on:
+      worker:
+        condition: service_healthy
       api:
         condition: service_healthy
 
@@ -204,4 +227,10 @@ volumes:
   evidence_data:
     driver: local
   easyocr_cache:
+    driver: local
+  # Models are downloaded from S3 on first boot and persist here, so
+  # subsequent restarts skip the download (entrypoint verifies files).
+  model_data:
+    driver: local
+  video_data:
     driver: local
