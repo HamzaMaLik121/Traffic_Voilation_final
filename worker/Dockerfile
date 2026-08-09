@@ -126,8 +126,8 @@ ENV AWS_DEFAULT_REGION="us-east-1"
 # NOTE: docker-compose.yml overrides this healthcheck — keep them in sync
 #       (both use a 1800s start period).
 # 'sh' prefix makes this independent of the exec bit (see compose note).
-HEALTHCHECK --interval=30s --timeout=10s --retries=10 --start-period=1800s \
-    CMD sh /app/healthcheck.sh
+HEALTHCHECK --interval=15s --timeout=10s --retries=5 --start-period=90s \
+    CMD ["/app/healthcheck.sh"]
 
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["python", "live_test.py"]

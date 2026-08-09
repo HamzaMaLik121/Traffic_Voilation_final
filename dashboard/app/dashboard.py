@@ -29,6 +29,17 @@ VIOLATIONS = {
     "ILLEGAL_UTURN": "Illegal U-Turn"
 }
 
+def get_request_host():
+    """Return the hostname/IP the browser used to reach this page,
+    read from the incoming request's Host header via Streamlit's
+    official st.context API. Falls back to localhost if unavailable."""
+    try:
+        host_header = st.context.headers.get("Host", "localhost:8501")
+        return host_header.split(":")[0]
+    except Exception:
+        return "localhost"
+
+
 DASHBOARD_TITLE = "Traffic Violation Detection System"
 
 # ── optional charting ─────────────────────────────────────────────────
@@ -428,8 +439,8 @@ def page_live():
     # The MJPEG <img> is self-updating, so it stays OUTSIDE the auto-refresh
     # fragment — it is never torn down or re-created by periodic refreshes.
     st.subheader("📹 Live Detection Feed")
+    stream_src = f"http://{get_request_host()}:5001/mjpeg"
 
-    stream_src = f"{STREAM_URL}/mjpeg"
     st.markdown(
         f'''
         <div id="live-feed-container" style="

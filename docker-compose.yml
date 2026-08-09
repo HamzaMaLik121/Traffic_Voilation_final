@@ -105,19 +105,18 @@ services:
       # container. With the ~/.aws mount this is unused anyway, but if the
       # mount is missing the aws-cli errors immediately instead of hanging
       # on an IMDS timeout, making the failure obvious in the logs.
-      - AWS_EC2_METADATA_DISABLED=true
-
     healthcheck:
       # Healthy only when models are on disk AND the shared DB exists.
-      # start_period 1800s (30 min) gives the first-boot S3 download
-      # (~350MB of weights + the test video) time to complete on any
-      # connection before failures start counting.
-      # 'sh' prefix makes this independent of the exec bit — works even
-      # if the script loses +x (Windows checkouts, bind mounts, etc.)
-      test: ["CMD", "sh", "/app/healthcheck.sh"]
+      # start_period 90s: worker init (S3 sync + model load) completes in
+      # seconds per prod logs; 90s is generous headroom, not a real 30min wait.
+      # Invoked by path (not "sh" prefix) so the script's own #!/bin/bash
+      # shebang is honored — the +x bit is baked in at build time via
+      # `RUN chmod +x` in the Dockerfile, so this is safe as long as the
+      # script is never bind-mounted over the image copy at runtime.
+      test: ["CMD", "/app/healthcheck.sh"]
       interval: 15s
       timeout: 10s
-      retries: 20
+      retries: 5
       start_period: 1800s
 
     deploy:
