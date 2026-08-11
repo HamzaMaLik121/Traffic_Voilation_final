@@ -1,0 +1,26 @@
+# ═════════════════════════════════════════════════════════════════════
+#  Single PVC, ReadWriteOnce — sufficient because worker/api/dashboard
+#  are 3 containers in ONE Pod, always co-scheduled on the same node.
+#  No NFS server, no RWX StorageClass needed (unlike the separate-
+#  Deployments version of this chart).
+#
+#  Sub-paths used inside this one volume (see deployment.yaml mounts):
+#    /database   ← worker writes, api reads
+#    /outputs    ← worker writes, api + dashboard read
+#    /models     ← worker writes (S3 sync cache)
+#    /videos     ← worker writes (S3 sync cache)
+#    /easyocr    ← worker writes (EasyOCR model cache)
+# ═════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}

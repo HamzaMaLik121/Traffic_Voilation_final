@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-lane-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+data:
+  lane_config.json: |
+{{ .Files.Get "files/lane_config.json" | indent 4 }}

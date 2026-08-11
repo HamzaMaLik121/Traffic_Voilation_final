@@ -1,0 +1,20 @@
+apiVersion: v2
+name: traffic-violation-detection
+description: >
+  Traffic Violation Detection System — worker, api, and dashboard running
+  as 3 containers in a single Pod (sidecar pattern), sharing state via a
+  local PersistentVolumeClaim. Matches the single-writer SQLite design:
+  worker can only ever run as 1 replica, so there is no real benefit to
+  splitting these into separate Deployments with network-shared (NFS/RWX)
+  storage — this keeps the same guarantees with far fewer moving parts.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - traffic-violation-detection
+  - yolov8
+  - flask
+  - streamlit
+  - computer-vision
+maintainers:
+  - name: Hamza Ali

@@ -1,0 +1,179 @@
+# ═════════════════════════════════════════════════════════════════════
+#  Single Deployment, 3 containers in 1 Pod (sidecar pattern):
+#    worker     — writes DB, evidence, models, videos (internal only, no port)
+#    api        — reads DB + evidence, serves REST + MJPEG on :5000
+#    dashboard  — calls api over localhost, serves UI on :8501
+#
+#  All 3 share the network namespace (localhost calls between them) and
+#  mount the same PVC at different subPaths, so file writes from worker
+#  are instantly visible to api/dashboard — no network filesystem layer.
+#
+#  replicas MUST stay 1: worker is a single SQLite writer + single video
+#  pipeline; running 2 Pods would mean 2 workers fighting over one video
+#  source and one DB file.
+# ═════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.pod.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+    {{- include "traffic.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.pod.replicaCount }}
+  strategy:
+    type: Recreate   # single-writer to SQLite — never run old+new pod at once
+  selector:
+    matchLabels:
+      {{- include "traffic.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "traffic.labels" . | nindent 8 }}
+        {{- include "traffic.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # ── worker ──────────────────────────────────────────────────
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            {{- range $k, $v := .Values.worker.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: MODEL_BUCKET
+              value: {{ .Values.modelBucket | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "traffic.awsSecretName" . }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "traffic.awsSecretName" . }}
+                  key: AWS_SECRET_ACCESS_KEY
+          volumeMounts:
+            - name: data
+              mountPath: /app/database
+              subPath: database
+            - name: data
+              mountPath: /app/outputs
+              subPath: outputs
+            - name: data
+              mountPath: /app/models
+              subPath: models
+            - name: data
+              mountPath: /app/data/videos
+              subPath: videos
+            - name: data
+              mountPath: /root/.EasyOCR
+              subPath: easyocr-cache
+            - name: lane-config
+              mountPath: /app/config/lane_config.json
+              subPath: lane_config.json
+              readOnly: true
+          startupProbe:
+            {{- toYaml .Values.worker.startupProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.worker.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.worker.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+
+        # ── api ─────────────────────────────────────────────────────
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+          env:
+            {{- range $k, $v := .Values.api.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/database
+              subPath: database
+            - name: data
+              mountPath: /app/outputs
+              subPath: outputs
+          readinessProbe:
+            {{- toYaml .Values.api.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.api.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+
+        # ── dashboard ───────────────────────────────────────────────
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.dashboard.port }}
+          env:
+            {{- range $k, $v := .Values.dashboard.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # Same Pod, same network namespace — "localhost" reaches the
+            # api container directly. No Service DNS needed internally.
+            - name: API_URL
+              value: "http://localhost:{{ .Values.api.port }}"
+            # Browser-facing MJPEG URL still needs the public Ingress
+            # host — the browser is NOT inside the Pod's network.
+            - name: STREAM_URL
+              value: {{ printf "http://%s/api" .Values.ingress.host | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/outputs
+              subPath: outputs
+          readinessProbe:
+            {{- toYaml .Values.dashboard.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.dashboard.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+        - name: lane-config
+          configMap:
+            name: {{ .Release.Name }}-lane-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.pod.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+    {{- include "traffic.selectorLabels" . | nindent 4 }}
+  {{- if .Values.serviceMonitor.enabled }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.api.port | quote }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "traffic.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.api.port }}
+      targetPort: {{ .Values.api.port }}
+      protocol: TCP
+    - name: dashboard
+      port: {{ .Values.dashboard.port }}
+      targetPort: {{ .Values.dashboard.port }}
+      protocol: TCP

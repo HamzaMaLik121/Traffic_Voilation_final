@@ -1,0 +1,38 @@
+{{- if .Values.ingress.enabled }}
+# ═════════════════════════════════════════════════════════════════════
+#    /            → Service port "dashboard" (8501)
+#    /api/*       → Service port "api" (5000), prefix stripped
+# ═════════════════════════════════════════════════════════════════════
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    {{- range $k, $v := .Values.ingress.annotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ .Values.pod.name }}
+                port:
+                  name: api
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ .Values.pod.name }}
+                port:
+                  name: dashboard
+{{- end }}

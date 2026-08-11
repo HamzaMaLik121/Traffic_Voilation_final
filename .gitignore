@@ -60,3 +60,6 @@ env/
 
 # ── Security reports ──────────────────────────────────────────────────
 security/
+
+# ── K8s Helm secrets (never commit real AWS keys) ──────────────────────
+traffic-violation-chart/secrets.values.yaml

@@ -1,0 +1,46 @@
+Traffic Violation Detection System deployed as release "{{ .Release.Name }}"
+in namespace "{{ .Values.global.namespace }}".
+
+── Architecture ─────────────────────────────────────────────────────
+1 Deployment, 1 Pod, 3 containers (worker + api + dashboard) sharing a
+single PVC via subPath mounts. replicas is fixed at {{ .Values.pod.replicaCount }}
+— do not scale this up, worker is a single SQLite writer.
+
+── Access ──────────────────────────────────────────────────────────
+{{- if .Values.ingress.enabled }}
+Add to /etc/hosts:
+  127.0.0.1  {{ .Values.ingress.host }}
+
+Then open:
+  http://{{ .Values.ingress.host }}           → Dashboard
+  http://{{ .Values.ingress.host }}/api/...   → REST API
+  http://{{ .Values.ingress.host }}/api/mjpeg → Live MJPEG feed
+{{- else }}
+Ingress is disabled. Port-forward manually:
+  kubectl port-forward -n {{ .Values.global.namespace }} svc/{{ .Values.pod.name }} 8501:{{ .Values.dashboard.port }}
+  kubectl port-forward -n {{ .Values.global.namespace }} svc/{{ .Values.pod.name }} 5000:{{ .Values.api.port }}
+{{- end }}
+
+── Check rollout status ────────────────────────────────────────────
+  kubectl get pods -n {{ .Values.global.namespace }} -w
+  kubectl logs -n {{ .Values.global.namespace }} deploy/{{ .Values.pod.name }} -c worker -f
+  kubectl logs -n {{ .Values.global.namespace }} deploy/{{ .Values.pod.name }} -c api -f
+  kubectl logs -n {{ .Values.global.namespace }} deploy/{{ .Values.pod.name }} -c dashboard -f
+
+── Storage ──────────────────────────────────────────────────────────
+Single ReadWriteOnce PVC ("{{ .Release.Name }}-data", {{ .Values.storage.size }}) on the
+"{{ .Values.storage.storageClassName }}" StorageClass (KinD's default local-path
+provisioner — no extra setup needed, unlike the separate-Deployments +
+NFS version of this chart).
+
+── Trade-off vs. separate Deployments ──────────────────────────────
+worker, api, and dashboard restart and scale together as one Pod. This
+is fine here because worker can only ever run as 1 replica (single
+SQLite writer, single video pipeline) — so independent scaling of
+api/dashboard was never actually usable in this app anyway.
+
+── Security note ────────────────────────────────────────────────────
+podSecurityContext.runAsNonRoot is currently false because some CV
+libraries (EasyOCR cache dirs, model writes) expect root as shipped in
+the current image. Hardening this requires adjusting file ownership in
+the worker Dockerfile — flag if you want that follow-up.

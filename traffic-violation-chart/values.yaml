@@ -1,0 +1,201 @@
+# ═════════════════════════════════════════════════════════════════════
+#  Traffic Violation Detection System — Helm values (sidecar pattern)
+#
+#  worker, api, dashboard run as 3 containers in ONE Pod (one Deployment,
+#  replicas: 1). They share storage via a single PVC mounted into all
+#  three containers at different sub-paths — no NFS server, no RWX
+#  StorageClass, no cross-node sharing problem, because they're always
+#  co-scheduled on the same node by definition.
+#
+#  Trade-off vs. separate Deployments: api and dashboard cannot scale or
+#  restart independently of worker. Acceptable here because worker can
+#  only ever run as 1 replica anyway (single SQLite writer) — so
+#  independent scaling of api/dashboard was never actually usable.
+# ═════════════════════════════════════════════════════════════════════
+
+global:
+  namespace: traffic-violation
+  imagePullPolicy: IfNotPresent
+
+# ── Storage ─────────────────────────────────────────────────────────
+# A single PVC, RWO (default on KinD's local-path StorageClass — no
+# special provisioner needed). Mounted into all 3 containers; each
+# container only touches its own sub-path.
+storage:
+  storageClassName: "standard"   # KinD's default local-path StorageClass
+  size: 15Gi                      # db + evidence + models + videos + easyocr cache combined
+
+# ── AWS / S3 (model + video sync, worker container only) ────────────
+aws:
+  accessKeyId: ""
+  secretAccessKey: ""
+  region: us-east-1
+  existingSecret: ""   # set this instead of the two keys above if you already created the Secret yourself
+
+modelBucket: traffic-violation-project-data-models
+
+# ═════════════════════════════════════════════════════════════════════
+#  Pod-level settings
+# ═════════════════════════════════════════════════════════════════════
+pod:
+  name: traffic-violation
+  replicaCount: 1   # MUST stay 1 — worker is a single SQLite writer + single video pipeline
+
+podSecurityContext:
+  runAsNonRoot: false   # worker needs root for some CV libs' cache dirs
+  fsGroup: 1000
+
+# ═════════════════════════════════════════════════════════════════════
+#  worker container — YOLOv8 + EasyOCR video detection pipeline
+# ═════════════════════════════════════════════════════════════════════
+worker:
+  image:
+    repository: traffic-worker
+    tag: latest
+
+  env:
+    PYTHONUNBUFFERED: "1"
+    LOOP_VIDEO: "1"
+    HEADLESS: "1"
+    MODEL_DIR: /app/models
+
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: "2.0"
+    requests:
+      memory: 512Mi
+      cpu: "0.5"
+
+  # Same script as before (worker/healthcheck.sh), now used as the
+  # container's own probes rather than a cross-Pod dependency gate.
+  startupProbe:
+    exec:
+      command: ["/app/healthcheck.sh"]
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 120   # 30min ceiling for first-boot S3 pull
+  readinessProbe:
+    exec:
+      command: ["/app/healthcheck.sh"]
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 5
+  livenessProbe:
+    exec:
+      command: ["pgrep", "-f", "live_test.py"]
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+# ═════════════════════════════════════════════════════════════════════
+#  api container — Flask REST API + MJPEG stream
+# ═════════════════════════════════════════════════════════════════════
+api:
+  port: 5000
+
+  env:
+    PYTHONUNBUFFERED: "1"
+    API_HOST: "0.0.0.0"
+    API_PORT: "5000"
+    DATABASE_DIR: /app/database
+    OUTPUT_DIR: /app/outputs
+
+  image:
+    repository: traffic-api
+    tag: latest
+
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: "0.5"
+    requests:
+      memory: 64Mi
+      cpu: "0.1"
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 5000
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 5000
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# ═════════════════════════════════════════════════════════════════════
+#  dashboard container — Streamlit web UI
+# ═════════════════════════════════════════════════════════════════════
+dashboard:
+  port: 8501
+
+  image:
+    repository: traffic-dashboard
+    tag: latest
+
+  env:
+    STREAMLIT_SERVER_PORT: "8501"
+    STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
+    STREAMLIT_SERVER_HEADLESS: "true"
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+  # API_URL and STREAM_URL are set to localhost in the Deployment
+  # template — all 3 containers share one Pod's network namespace, so
+  # "localhost:5000" reaches the api container directly, no Service
+  # DNS needed for that internal call.
+
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "0.5"
+    requests:
+      memory: 128Mi
+      cpu: "0.1"
+
+  readinessProbe:
+    httpGet:
+      path: /_stcore/health
+      port: 8501
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  livenessProbe:
+    httpGet:
+      path: /_stcore/health
+      port: 8501
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+# ═════════════════════════════════════════════════════════════════════
+#  Service — exposes the Pod's api + dashboard ports
+# ═════════════════════════════════════════════════════════════════════
+service:
+  type: ClusterIP
+
+# ═════════════════════════════════════════════════════════════════════
+#  Ingress — single host, path-routed
+# ═════════════════════════════════════════════════════════════════════
+ingress:
+  enabled: true
+  className: nginx
+  host: traffic.local.test
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"   # MJPEG needs unbuffered streaming
+
+# ── ServiceMonitor (kube-prometheus-stack, installed by bootstrap script) ─
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labelRelease: kube-prometheus-stack
+  interval: 30s

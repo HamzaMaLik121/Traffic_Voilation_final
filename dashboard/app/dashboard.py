@@ -439,7 +439,7 @@ def page_live():
     # The MJPEG <img> is self-updating, so it stays OUTSIDE the auto-refresh
     # fragment — it is never torn down or re-created by periodic refreshes.
     st.subheader("📹 Live Detection Feed")
-    stream_src = f"http://{get_request_host()}:5001/mjpeg"
+    stream_src = f"{STREAM_URL}/mjpeg"
 
     st.markdown(
         f'''

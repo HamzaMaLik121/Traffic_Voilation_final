@@ -1,0 +1,25 @@
+{{- if .Values.serviceMonitor.enabled }}
+# Requires kube-prometheus-stack already running (installed by
+# bootstrap-kind-platform.sh). NOTE: api/main.py currently exposes
+# /health but no Prometheus-format /metrics — add that route for real
+# dashboards; until then this scrapes but gets non-metrics responses.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.serviceMonitor.namespace }}
+  labels:
+    {{- include "traffic.labels" . | nindent 4 }}
+    release: {{ .Values.serviceMonitor.labelRelease }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.global.namespace }}
+  selector:
+    matchLabels:
+      {{- include "traffic.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: api
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}
