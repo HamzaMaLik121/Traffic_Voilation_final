@@ -13,7 +13,7 @@ This guide covers the full flow:
 | File | Purpose |
 |------|---------|
 | `argocd-app.yaml` | ArgoCD `Application` CR — tells ArgoCD which repo/branch/path to sync and where to deploy |
-| `argocd-aws-secret.yaml` | Kubernetes `Secret` template for AWS credentials (fill in your keys before applying) |
+| `worker-aws-secret.yaml` | Kubernetes `Secret` template for the **worker container's** AWS credentials — ArgoCD itself does not need AWS access |
 | `README-ARGOCD.md` | This guide |
 
 ---
