@@ -16,6 +16,9 @@
 global:
   namespace: traffic-violation
   imagePullPolicy: IfNotPresent
+  # Leave empty on EKS when the node IAM role can pull from ECR.  For KinD or
+  # another cluster, add a pre-created docker-registry secret name here.
+  imagePullSecrets: []
 
 # ── Storage ─────────────────────────────────────────────────────────
 # A single PVC, RWO (default on KinD's local-path StorageClass — no
@@ -144,11 +147,11 @@ dashboard:
     STREAMLIT_SERVER_PORT: "8501"
     STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
     STREAMLIT_SERVER_HEADLESS: "true"
+    STREAMLIT_SERVER_FILE_WATCHER_TYPE: "poll"
     STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
-  # API_URL and STREAM_URL are set to localhost in the Deployment
-  # template — all 3 containers share one Pod's network namespace, so
-  # "localhost:5000" reaches the api container directly, no Service
-  # DNS needed for that internal call.
+    # A relative URL keeps the stream on the same ingress host.  No external
+    # IP address or port is embedded in the container image.
+    STREAM_URL: "/api"
 
   resources:
     limits:

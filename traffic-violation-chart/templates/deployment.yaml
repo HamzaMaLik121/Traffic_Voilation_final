@@ -35,6 +35,10 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         # ── worker ──────────────────────────────────────────────────
         - name: worker
@@ -128,10 +132,6 @@ spec:
             # api container directly. No Service DNS needed internally.
             - name: API_URL
               value: "http://localhost:{{ .Values.api.port }}"
-            # Browser-facing MJPEG URL still needs the public Ingress
-            # host — the browser is NOT inside the Pod's network.
-            - name: STREAM_URL
-              value: {{ printf "http://%s/api" .Values.ingress.host | quote }}
           volumeMounts:
             - name: data
               mountPath: /app/outputs

@@ -16,9 +16,10 @@ from datetime import datetime, timedelta
 # API URL from environment variable (set in docker-compose / Kubernetes)
 API_URL = os.getenv("API_URL", "http://api:5000")
 
-# External URL for browser-side content (MJPEG stream - browser reaches this directly)
-# Default to localhost:5001 which is the mapped port in docker-compose
-STREAM_URL = os.getenv("STREAM_URL", "http://localhost:5001")
+# Browser-facing base URL for the MJPEG stream.  Kubernetes supplies "/api"
+# so the browser stays on the current Ingress host.  Docker Compose leaves it
+# empty, in which case the current host plus the published API port is used.
+STREAM_URL = os.getenv("STREAM_URL", "").rstrip("/")
 
 # Violation type labels
 VIOLATIONS = {
@@ -439,7 +440,10 @@ def page_live():
     # The MJPEG <img> is self-updating, so it stays OUTSIDE the auto-refresh
     # fragment — it is never torn down or re-created by periodic refreshes.
     st.subheader("📹 Live Detection Feed")
-    stream_src = f"http://{get_request_host()}:5000/mjpeg"
+    # In Kubernetes this is the relative Ingress route (/api/mjpeg), which
+    # needs no hostname, IP address, or exposed API port.  Compose retains a
+    # dynamic fallback for direct host access.
+    stream_src = f"{STREAM_URL}/mjpeg" if STREAM_URL else f"http://{get_request_host()}:5000/mjpeg"
 
     st.markdown(
         f'''
