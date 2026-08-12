@@ -50,8 +50,8 @@ podSecurityContext:
 # ═════════════════════════════════════════════════════════════════════
 worker:
   image:
-    repository: traffic-worker
-    tag: latest
+    repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/worker
+    tag: "20260812-2307"
 
   env:
     PYTHONUNBUFFERED: "1"
@@ -102,8 +102,8 @@ api:
     OUTPUT_DIR: /app/outputs
 
   image:
-    repository: traffic-api
-    tag: latest
+    repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/api
+    tag: "20260812-2307"
 
   resources:
     limits:
@@ -137,8 +137,8 @@ dashboard:
   port: 8501
 
   image:
-    repository: traffic-dashboard
-    tag: latest
+    repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/dashboard
+    tag: "20260812-2307"
 
   env:
     STREAMLIT_SERVER_PORT: "8501"
