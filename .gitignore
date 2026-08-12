@@ -63,3 +63,10 @@ security/
 
 # ── K8s Helm secrets (never commit real AWS keys) ──────────────────────
 traffic-violation-chart/secrets.values.yaml
+
+# ── ArgoCD / worker secrets ───────────────────────────────────────────
+# worker-aws-secret.yaml is intentionally tracked for this demo project.
+# Before making the repo public or after the demo, blank out the base64
+# values in that file and commit again.
+# Uncomment the line below to stop tracking it entirely:
+# argocd/worker-aws-secret.yaml
