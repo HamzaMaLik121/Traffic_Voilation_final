@@ -1,0 +1,102 @@
+# ═════════════════════════════════════════════════════════════════════
+#  ArgoCD Application — Traffic Violation Detection System
+#
+#  This tells ArgoCD to watch your GitHub repo and deploy the Helm
+#  chart in traffic-violation-chart/ to the traffic-violation namespace.
+#
+#  Apply with:
+#    kubectl apply -f argocd/argocd-app.yaml
+#
+#  Before applying, make sure the AWS credentials secret exists:
+#    kubectl apply -f argocd/argocd-aws-secret.yaml
+# ═════════════════════════════════════════════════════════════════════
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traffic-violation
+  namespace: argocd
+  # Finalizer ensures ArgoCD cleans up all resources when this
+  # Application is deleted (cascade delete).
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # ── Project ──────────────────────────────────────────────────────
+  project: default
+
+  # ── Source: your GitHub repo + Helm chart path ───────────────────
+  source:
+    repoURL: https://github.com/HamzaMaLik121/Traffic_Voilation_final.git
+    targetRevision: main          # branch ArgoCD tracks
+    path: traffic-violation-chart # folder containing Chart.yaml
+
+    helm:
+      # ── Release name (= {{ .Release.Name }} in templates) ────────
+      releaseName: traffic-violation
+
+      # ── Value overrides ──────────────────────────────────────────
+      # AWS credentials: reference the pre-created Secret instead of
+      # embedding credentials in this file (keep secrets out of Git).
+      # The secret is created by argocd/argocd-aws-secret.yaml BEFORE
+      # this Application syncs (PreSync hook).
+      values: |
+        aws:
+          existingSecret: "traffic-violation-aws-credentials"
+          region: us-east-1
+
+        modelBucket: traffic-violation-project-data-models
+
+        global:
+          imagePullPolicy: IfNotPresent
+
+        # StorageClass for PVC — "standard" on KinD, "gp2" on EKS.
+        # Change to match your cluster's default StorageClass.
+        storage:
+          storageClassName: "standard"   # KinD default
+          # storageClassName: "gp2"      # AWS EKS default
+          size: 15Gi
+
+        worker:
+          image:
+            repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/worker
+            tag: "20260812-2307"
+
+        api:
+          image:
+            repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/api
+            tag: "20260812-2307"
+
+        dashboard:
+          image:
+            repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/dashboard
+            tag: "20260812-2307"
+
+        ingress:
+          enabled: true
+          className: nginx
+          host: traffic.local.test
+
+        serviceMonitor:
+          enabled: true
+          namespace: monitoring
+          labelRelease: kube-prometheus-stack
+          interval: 30s
+
+  # ── Destination: cluster + namespace ─────────────────────────────
+  destination:
+    server: https://kubernetes.default.svc   # in-cluster (ArgoCD is on the same cluster)
+    namespace: traffic-violation
+
+  # ── Sync policy ──────────────────────────────────────────────────
+  syncPolicy:
+    automated:
+      prune: true      # delete resources removed from Git
+      selfHeal: true   # re-apply if someone changes resources manually
+    syncOptions:
+      - CreateNamespace=true        # create traffic-violation ns if missing
+      - ServerSideApply=true        # avoids annotation-too-long errors on large CRDs
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
