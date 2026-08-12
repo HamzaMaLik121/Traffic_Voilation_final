@@ -168,7 +168,7 @@ services:
       start_period: 10s
 
     ports:
-      - "5001:5000"
+      - "5000:5000"
 
     deploy:
       resources:
@@ -197,7 +197,7 @@ services:
         condition: service_healthy
 
     ports:
-      - "8502:8501"
+      - "8501:8501"
 
     volumes:
       # Read evidence images from shared volume
