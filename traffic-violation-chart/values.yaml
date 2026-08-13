@@ -193,7 +193,7 @@ service:
 ingress:
   enabled: true
   className: nginx
-  host: traffic.local.test
+  host: ""   # empty = match any host, access via raw EC2 IP http://3.88.55.234
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
