@@ -408,6 +408,18 @@ helm upgrade --install kube-prometheus-stack \
 
 ok "Prometheus + Grafana + Alertmanager installed."
 
+# ----------------------------- ingress-nginx ---------------------------------
+log "Installing ingress-nginx (KinD provider)..."
+kubectl apply -f \
+  https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
+
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=120s
+
+ok "ingress-nginx installed."
+
 # ----------------------------- Trivy Operator --------------------------------
 kubectl create namespace "${TRIVY_NS}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
