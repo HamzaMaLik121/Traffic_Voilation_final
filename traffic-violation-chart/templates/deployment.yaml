@@ -130,10 +130,6 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-            # Same Pod, same network namespace — "localhost" reaches the
-            # api container directly. No Service DNS needed internally.
-            - name: API_URL
-              value: "http://localhost:{{ .Values.api.port }}"
           volumeMounts:
             - name: data
               mountPath: /app/outputs
