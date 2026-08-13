@@ -36,22 +36,26 @@ class ViolationDatabase:
     
     def _lazy_connect(self):
         """
-        Connect to database with graceful fallback:
-        - If the DB file exists, connect in read-only mode
-        - If the DB file doesn't exist yet, create + connect in read-write mode
-          (the worker hasn't written anything yet, so there's nothing to read)
+        Connect to database with graceful fallback.
+        Safe to call multiple times — closes existing connection first.
         """
+        # Close existing connection before reconnecting
+        try:
+            if self.conn:
+                self.conn.close()
+        except Exception:
+            pass
+        self.conn = None
+        self.cursor = None
+
         db_file = Path(self.db_path)
-        
+
         if db_file.exists():
-            # Read-only mode for existing DB (worker has written records)
             uri = f"file:{self.db_path}?mode=ro"
             self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
             self.cursor = self.conn.cursor()
             print(f"✓ Connected to database (read-only): {self.db_path}")
         else:
-            # DB doesn't exist yet — create it in read-write mode
-            # Tables will be empty, but queries won't crash
             print(f"ℹ Database not found at {self.db_path} — creating empty database")
             self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self.cursor = self.conn.cursor()

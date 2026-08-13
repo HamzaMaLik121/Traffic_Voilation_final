@@ -445,10 +445,9 @@ def get_statistics():
 @api_bp.route('/health', methods=['GET'])
 def health():
     try:
-        # If DB isn't ready yet (worker still pulling models), return healthy
-        # anyway — the liveness probe should not kill the api during startup.
-        if db is None:
-            return jsonify({'status': 'healthy', 'database': 'initializing'}), 200
+        # Reconnect on every health check — avoids stale read-only connection
+        # errors when the worker is actively writing to the DB.
+        db._lazy_connect()
         count = len(db.get_violations(limit=1))
         return jsonify({
             'status': 'healthy',
@@ -456,7 +455,7 @@ def health():
             'violations_count': count
         })
     except Exception as e:
-        # DB file not created yet — still starting up, not a real failure
+        # DB not ready yet (worker still downloading models) — not a fatal error
         return jsonify({
             'status': 'healthy',
             'database': 'initializing',
