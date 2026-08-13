@@ -112,7 +112,7 @@ spec:
               subPath: outputs
           readinessProbe:
             {{- toYaml .Values.api.readinessProbe | nindent 12 }}
-          {{- if .Values.api.livenessProbe }}
+          {{- if hasKey .Values.api "livenessProbe" }}
           livenessProbe:
             {{- toYaml .Values.api.livenessProbe | nindent 12 }}
           {{- end }}

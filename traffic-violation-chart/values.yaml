@@ -127,10 +127,7 @@ api:
     periodSeconds: 30
     timeoutSeconds: 5
     failureThreshold: 10
-  # No liveness probe on api — the process never hangs, it either serves
-  # or crashes. A liveness probe here causes false restarts during DB
-  # reconnects. Readiness probe is sufficient.
-  livenessProbe: null
+  # livenessProbe intentionally omitted — no restart needed, readiness is enough
 
 # ═════════════════════════════════════════════════════════════════════
 #  dashboard container — Streamlit web UI
