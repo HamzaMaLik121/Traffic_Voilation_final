@@ -89,7 +89,7 @@ worker:
     failureThreshold: 5
   livenessProbe:
     exec:
-      command: ["pgrep", "-f", "live_test.py"]
+      command: ["test", "-f", "/app/models/.models_ready"]
     periodSeconds: 30
     timeoutSeconds: 10
     failureThreshold: 3
