@@ -108,6 +108,7 @@ ARGOCD_PASS=$(kubectl -n "${ARGOCD_NS}" get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || echo "not found")
 
 EC2_IP=$(curl -sf --max-time 3 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null \
+  || curl -sf --max-time 3 https://checkip.amazonaws.com 2>/dev/null \
   || hostname -I | awk '{print $1}')
 
 echo
