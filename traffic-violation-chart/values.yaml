@@ -36,7 +36,7 @@ aws:
   accessKeyId: ""
   secretAccessKey: ""
   region: us-east-1
-  existingSecret: ""   # set this instead of the two keys above if you already created the Secret yourself
+  existingSecret: "traffic-violation-aws-credentials"   # secret is created manually on EC2, not by Helm
 
 modelBucket: traffic-violation-project-data-models
 
