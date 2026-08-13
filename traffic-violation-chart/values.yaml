@@ -127,14 +127,10 @@ api:
     periodSeconds: 30
     timeoutSeconds: 5
     failureThreshold: 10
-  livenessProbe:
-    httpGet:
-      path: /health
-      port: 5000
-    initialDelaySeconds: 60
-    periodSeconds: 30
-    timeoutSeconds: 5
-    failureThreshold: 10
+  # No liveness probe on api — the process never hangs, it either serves
+  # or crashes. A liveness probe here causes false restarts during DB
+  # reconnects. Readiness probe is sufficient.
+  livenessProbe: null
 
 # ═════════════════════════════════════════════════════════════════════
 #  dashboard container — Streamlit web UI
