@@ -21,7 +21,7 @@ global:
   # The script creates/refreshes the "ecr-credentials" docker-registry
   # secret in the traffic-violation namespace (token valid 12h).
   imagePullSecrets:
-    - name: ecr-credentials
+    - name: ecr-credentials  # auto-refreshed every 10h by ecr-token-refresh CronJob
 
 # ── Storage ─────────────────────────────────────────────────────────
 # A single PVC, RWO (default on KinD's local-path StorageClass — no
@@ -152,9 +152,9 @@ dashboard:
     STREAMLIT_SERVER_HEADLESS: "true"
     STREAMLIT_SERVER_FILE_WATCHER_TYPE: "poll"
     STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
-    # A relative URL keeps the stream on the same ingress host.  No external
-    # IP address or port is embedded in the container image.
     STREAM_URL: "/api"
+    # localhost works because api and dashboard are in the same pod
+    API_URL: "http://localhost:5000"
 
   resources:
     limits:

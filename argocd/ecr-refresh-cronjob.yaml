@@ -1,0 +1,106 @@
+# ═════════════════════════════════════════════════════════════════════
+#  ECR Token Refresh CronJob
+#
+#  ECR login tokens expire every 12 hours. This CronJob runs every
+#  10 hours and refreshes the "ecr-credentials" imagePullSecret so
+#  pods can always pull images without any manual intervention.
+#
+#  Apply once:
+#    kubectl apply -f argocd/ecr-refresh-cronjob.yaml
+#  (deploy.sh does this automatically)
+# ═════════════════════════════════════════════════════════════════════
+---
+# ServiceAccount for the CronJob pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ecr-refresh
+  namespace: traffic-violation
+---
+# RBAC — allow the pod to update the ecr-credentials secret only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ecr-refresh
+  namespace: traffic-violation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ecr-refresh
+  namespace: traffic-violation
+subjects:
+  - kind: ServiceAccount
+    name: ecr-refresh
+    namespace: traffic-violation
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: ecr-refresh
+---
+# CronJob — refreshes ECR token every 10 hours
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ecr-token-refresh
+  namespace: traffic-violation
+spec:
+  # Every 10 hours (ECR tokens expire after 12h)
+  schedule: "0 */10 * * *"
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ecr-refresh
+          restartPolicy: OnFailure
+          containers:
+            - name: ecr-refresh
+              # aws-cli image — small, official, no extra deps needed
+              image: amazon/aws-cli:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-1"
+                - name: ECR_REGISTRY
+                  value: "839706991042.dkr.ecr.us-east-1.amazonaws.com"
+                - name: SECRET_NAME
+                  value: "ecr-credentials"
+                - name: NAMESPACE
+                  value: "traffic-violation"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: traffic-violation-aws-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: traffic-violation-aws-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Getting ECR login token..."
+                  TOKEN=$(aws ecr get-login-password --region "${AWS_DEFAULT_REGION}")
+
+                  echo "Building docker config JSON..."
+                  DOCKER_CONFIG=$(echo -n "AWS:${TOKEN}" | base64 | tr -d '\n')
+                  AUTH_JSON="{\"auths\":{\"${ECR_REGISTRY}\":{\"auth\":\"${DOCKER_CONFIG}\"}}}"
+
+                  echo "Updating secret ${SECRET_NAME} in namespace ${NAMESPACE}..."
+                  kubectl create secret docker-registry "${SECRET_NAME}" \
+                    --namespace "${NAMESPACE}" \
+                    --docker-server="${ECR_REGISTRY}" \
+                    --docker-username=AWS \
+                    --docker-password="${TOKEN}" \
+                    --dry-run=client -o yaml | kubectl apply -f -
+
+                  echo "ECR token refreshed successfully."
