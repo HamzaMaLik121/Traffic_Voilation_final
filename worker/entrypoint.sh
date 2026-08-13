@@ -82,17 +82,21 @@ s3_sync_retry() {
 # Give a clear, actionable error instead of a cryptic S3 permission
 # failure 3 minutes later. Only called when an S3 pull is actually needed.
 check_aws_credentials() {
-    # timeout 30 guards against a hang when no credentials are present
-    # (e.g. metadata endpoint stalls) — fail fast with a clear message.
+    # Check env vars directly — avoids STS network call and EC2 metadata
+    # endpoint interference when running inside KinD on an EC2 instance.
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        echo "[aws] Credentials OK (from environment)."
+        return 0
+    fi
+    # Fallback: try STS (works for IAM roles, EKS IRSA, etc.)
     if timeout 30 aws sts get-caller-identity >/dev/null 2>&1; then
-        echo "[aws] Credentials OK."
+        echo "[aws] Credentials OK (from instance role / IRSA)."
         return 0
     fi
     echo "[aws] ERROR: AWS credentials not found or invalid."
     echo "[aws]"
-    echo "[aws] Run 'aws configure' on the host machine, then start again:"
-    echo "[aws]   aws configure          # AWS Access Key, Secret Key, region us-east-1"
-    echo "[aws]   docker compose up"
+    echo "[aws] Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars,"
+    echo "[aws] or attach an IAM role to the node."
     echo "[aws]"
     echo "[aws] The worker pulls models + videos from S3 automatically."
     return 1
