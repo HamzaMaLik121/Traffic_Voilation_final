@@ -413,6 +413,10 @@ log "Installing ingress-nginx (KinD provider)..."
 kubectl apply -f \
   https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/kind/deploy.yaml
 
+# KinD provider manifest requires the control-plane node to be labelled
+log "Labelling control-plane node for ingress-nginx..."
+kubectl label node "${CLUSTER_NAME}-control-plane" ingress-ready=true --overwrite
+
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
   --selector=app.kubernetes.io/component=controller \
