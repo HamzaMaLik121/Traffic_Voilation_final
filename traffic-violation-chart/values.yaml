@@ -57,7 +57,7 @@ podSecurityContext:
 worker:
   image:
     repository: 839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/worker
-    tag: "20260813-fixed"
+    tag: "20260814-clean"
 
   env:
     PYTHONUNBUFFERED: "1"
