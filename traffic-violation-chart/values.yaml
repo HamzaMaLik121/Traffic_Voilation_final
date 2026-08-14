@@ -68,7 +68,7 @@ worker:
   resources:
     limits:
       memory: 2Gi
-      cpu: "2.0"
+      cpu: "1.0"       # capped at 1 to leave CPU for ArgoCD/Grafana/Prometheus
     requests:
       memory: 512Mi
       cpu: "0.5"
