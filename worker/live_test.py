@@ -65,7 +65,20 @@ def save_evidence(frame, violation_type, frame_number, evidence_dir):
     filename = f"{violation_type}_{ts}_f{frame_number}.{EVIDENCE_FORMAT}"
     path = evidence_dir / filename
     cv2.imwrite(str(path), frame)
+    # Keep only the 500 most recent evidence images to prevent disk full
+    _cleanup_evidence(evidence_dir, keep=500)
     return str(path)
+
+
+def _cleanup_evidence(evidence_dir, keep=500):
+    """Delete oldest evidence images, keeping only the most recent `keep` files."""
+    try:
+        files = sorted(evidence_dir.glob(f"*.{EVIDENCE_FORMAT}"), key=lambda f: f.stat().st_mtime)
+        to_delete = files[:-keep] if len(files) > keep else []
+        for f in to_delete:
+            f.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def record_violation(db, violation, frame_number, video_path, evidence_path=None):
