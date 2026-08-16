@@ -24,7 +24,7 @@ WORKDIR /app
 
 # Python packages: only Flask + SQLite, no ML libraries
 COPY requirements-api.txt .
-RUN pip install --no-cache-dir --upgrade pip \
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements-api.txt
 
 # Application source code
