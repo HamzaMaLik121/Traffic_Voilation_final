@@ -85,26 +85,26 @@ RUN python3 -c "import easyocr; reader = easyocr.Reader(['en'], gpu=False); prin
 # ── Pre-create Ultralytics settings ─────────────────────────────────
 # First import of ultralytics creates a settings file with a warning.
 # We pre-create it to avoid that message and keep logs clean.
-RUN mkdir -p /root/.config/Ultralytics && cat > /root/.config/Ultralytics/settings.yaml << 'EOF'
-settings_version: 0.0.4
-datasets_dir: /app/datasets
-weights_dir: /app/models
-run_dir: /app/runs
-uuid: prebaked-docker
-sync: false
-api_key: ""
-openai_api_key: ""
-clearml: false
-comet: false
-dvc: false
-hub: false
-mlflow: false
-neptune: false
-raytune: false
-tensorboard: false
-wandb: false
-pip_install: false
-EOF
+RUN mkdir -p /root/.config/Ultralytics && printf '%s\n' \
+    'settings_version: 0.0.4' \
+    'datasets_dir: /app/datasets' \
+    'weights_dir: /app/models' \
+    'run_dir: /app/runs' \
+    'uuid: prebaked-docker' \
+    'sync: false' \
+    'api_key: ""' \
+    'openai_api_key: ""' \
+    'clearml: false' \
+    'comet: false' \
+    'dvc: false' \
+    'hub: false' \
+    'mlflow: false' \
+    'neptune: false' \
+    'raytune: false' \
+    'tensorboard: false' \
+    'wandb: false' \
+    'pip_install: false' \
+    > /root/.config/Ultralytics/settings.yaml
 
 # ── Environment variables ───────────────────────────────────────────
 ENV QT_QPA_PLATFORM=offscreen
