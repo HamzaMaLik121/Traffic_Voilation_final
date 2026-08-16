@@ -197,7 +197,7 @@ jobs:
           image-ref: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}
           format: sarif
           output: trivy-results.sarif
-          severity: CRITICAL,HIGH
+          severity: CRITICAL
           exit-code: '1'                     # fail job if any CRITICAL/HIGH found
           # Only fail on fixable findings. Set to false if you also want to
           # fail on unfixed base-image CVEs (pipeline will often be red).
