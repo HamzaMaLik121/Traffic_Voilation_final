@@ -45,7 +45,7 @@ modelBucket: traffic-violation-project-data-models
 # ═════════════════════════════════════════════════════════════════════
 pod:
   name: traffic-violation
-  replicaCount: 1   # MUST stay 1 — worker is a single SQLite writer + single video pipeline
+  replicaCount: 3   # MUST stay 1 — worker is a single SQLite writer + single video pipeline
 
 podSecurityContext:
   runAsNonRoot: false   # worker needs root for some CV libs' cache dirs
