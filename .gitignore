@@ -70,3 +70,8 @@ traffic-violation-chart/secrets.values.yaml
 # values in that file and commit again.
 # Uncomment the line below to stop tracking it entirely:
 # argocd/worker-aws-secret.yaml
+
+# ── AI coding assistant local config (Kimchi/Claude/agent skills) ──────
+.kimchi/
+.claude/
+.agents/

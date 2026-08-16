@@ -1,0 +1,280 @@
+# ═════════════════════════════════════════════════════════════════════════════
+#  CI/CD Pipeline — Traffic Violation Detection System
+#
+#  Pipeline flow:
+#    1. SECURITY SCANS (parallel)   → OWASP Dependency-Check (SCA) + SonarCloud (SAST)
+#    2. BUILD (after scans pass)    → Docker images for worker / api / dashboard (matrix),
+#                                    each tagged with the short git SHA
+#    3. TRIVY SCAN (after build)    → container scan of the 3 built images, fail on
+#                                    CRITICAL/HIGH, SARIF uploaded to GitHub Security tab
+#    4. PUSH TO ECR (after trivy)   → push-to-main only; tagged with git SHA.
+#                                    ArgoCD Image Updater watches ECR and auto-deploys
+#                                    the new tag — this workflow does NOT touch any
+#                                    Helm/GitOps manifests.
+#
+#  ECR repositories (existing, region us-east-1):
+#    839706991042.dkr.ecr.us-east-1.amazonaws.com/traffic-violation/{worker,api,dashboard}
+# ═════════════════════════════════════════════════════════════════════════════
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write          # needed to upload SARIF results to the Security tab
+  pull-requests: write            # needed by SonarCloud to decorate PRs with findings
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 839706991042.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_PREFIX: traffic-violation
+
+jobs:
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  #  JOB 1a — OWASP Dependency-Check (SCA)
+  #  Scans repo dependencies (pip requirements files). Fails on CVSS >= 7.
+  # ═════════════════════════════════════════════════════════════════════════════
+  dependency-check:
+    name: 🔍 OWASP Dependency-Check (SCA)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'Traffic Violation Detection System'
+          path: '.'
+          format: 'SARIF'
+          out: 'reports'                    # default output folder
+          args: >
+            --failOnCVSS 7                  # fail build on High/Critical (CVSS >= 7)
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()                        # upload even if the scan found issues
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/dependency-check-report.sarif
+          category: dependency-check
+
+      - name: Upload dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports
+          retention-days: 7
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### 🔍 OWASP Dependency-Check (SCA)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Scan path:** \`.\` (full repo — pip requirements)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Fail threshold:** CVSS >= 7 (High / Critical)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SARIF** uploaded to **Security → Code scanning** tab" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Full report: artifact \`dependency-check-report\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  #  JOB 1b — SonarCloud SAST
+  #  Cloud-hosted SonarQube (SonarCloud) — project already exists there.
+  #  Project key comes from sonar-project.properties at the repo root.
+  # ═════════════════════════════════════════════════════════════════════════════
+  sonarcloud:
+    name: 📊 SonarCloud SAST
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                     # SonarCloud needs full history for accurate analysis
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          organization: ${{ secrets.SONAR_ORGANIZATION }}
+          # projectKey is read from sonar-project.properties (repo root)
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### 📊 SonarCloud SAST" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Organization:** \`${{ secrets.SONAR_ORGANIZATION }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Project:** \`HamzaMaLik121_Traffic_Voilation_final\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Results:** https://sonarcloud.io/dashboard?id=HamzaMaLik121_Traffic_Voilation_final" >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  #  JOB 2 — Build Docker images (matrix over the 3 services)
+  #  Runs only after BOTH security scans pass. Tags with short git SHA,
+  #  exports the image as an artifact for the Trivy + ECR jobs (no push yet).
+  # ═════════════════════════════════════════════════════════════════════════════
+  build:
+    name: 🐳 Build ${{ matrix.service }}
+    needs: [dependency-check, sonarcloud]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [worker, api, dashboard]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set short git SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Build image (load into local docker, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}
+
+      - name: Export image for downstream jobs
+        run: |
+          docker save -o image.tar \
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+          path: image.tar
+          retention-days: 1
+
+      - name: Job summary
+        run: |
+          echo "### 🐳 Build \`${{ matrix.service }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Context: \`./${{ matrix.service }}\` — passed to Trivy scan next" >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  #  JOB 3 — Trivy image scan (matrix)
+  #  Scans the images built in Job 2 (transferred via artifact). Fails the
+  #  pipeline on CRITICAL or HIGH vulnerabilities. SARIF → GitHub Security tab.
+  # ═════════════════════════════════════════════════════════════════════════════
+  trivy-scan:
+    name: 🛡️ Trivy Scan ${{ matrix.service }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [worker, api, dashboard]
+    steps:
+      - name: Set short git SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+          path: /tmp/image
+
+      - name: Load image
+        run: docker load -i /tmp/image/image.tar
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'                     # fail job if any CRITICAL/HIGH found
+          # Only fail on fixable findings. Set to false if you also want to
+          # fail on unfixed base-image CVEs (pipeline will often be red).
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF to GitHub Security tab
+        if: always()                         # upload findings even when the gate fails
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ matrix.service }}
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ matrix.service }}
+          path: trivy-results.sarif
+          retention-days: 7
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### 🛡️ Trivy Scan \`${{ matrix.service }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Gate:** fails on CRITICAL / HIGH (\`ignore-unfixed: true\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SARIF** uploaded to **Security → Code scanning** tab" >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════════════════════════════════════════════════════════════════
+  #  JOB 4 — Push to ECR (matrix)
+  #  Only on push to main (skipped on PRs), only after Trivy passes.
+  #  Ends at ECR push — ArgoCD Image Updater picks up the new SHA tag
+  #  automatically. No Helm/GitOps manifests are updated here.
+  # ═════════════════════════════════════════════════════════════════════════════
+  push-to-ecr:
+    name: 🚀 Push ${{ matrix.service }} to ECR
+    needs: trivy-scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [worker, api, dashboard]
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set short git SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+          path: /tmp/image
+
+      - name: Load image
+        run: docker load -i /tmp/image/image.tar
+
+      - name: Push image to ECR
+        run: |
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ env.SHORT_SHA }}"
+          docker push "$IMAGE"
+          echo "PUSHED_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Job summary
+        run: |
+          echo "### 🚀 ECR Push \`${{ matrix.service }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pushed:** \`${{ env.PUSHED_IMAGE }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ArgoCD Image Updater will detect the new tag and auto-deploy — no manifest update needed." >> "$GITHUB_STEP_SUMMARY"
